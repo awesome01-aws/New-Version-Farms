@@ -4,15 +4,20 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { 
   Plus, Minus, Egg, Phone, MapPin, User, Tag, 
   HelpCircle, AlertCircle, Sparkles, Filter, 
-  ArrowUpDown, Check, FileEdit, Trash2, X, MessageSquare,
-  FileText, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw
+  ArrowUpDown, Check, CheckCircle2, FileEdit, Trash2, X, MessageSquare,
+  FileText, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw,
+  ChevronDown, Search, Calendar, DollarSign, TrendingUp, BarChart3
 } from 'lucide-react';
 import { Client, IncubatorRecord, SpecialCase } from '../types';
-import { computeAmountDue } from '../lib/offlineStore';
+import { computeAmountDue, getStandardRateBySpecies } from '../lib/offlineStore';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
+import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
+import { parseExcelDate, downloadExcelTemplate } from './ExcelImportModal';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface IncubatorModProps {
   data: {
@@ -23,9 +28,659 @@ interface IncubatorModProps {
   token: string;
   selectedEditRecord: IncubatorRecord | null;
   setSelectedEditRecord: (record: IncubatorRecord | null) => void;
+  selectedClientForEdit?: Client | null;
+  setSelectedClientForEdit?: (client: Client | null) => void;
   quickFormKey: string | null;
   setQuickFormKey: (key: string | null) => void;
 }
+
+export const isRecordHatched = (rec: any): boolean => {
+  if (!rec) return false;
+  return rec.chicksHatched !== null && rec.chicksHatched !== undefined && String(rec.chicksHatched).trim() !== '';
+};
+
+export const getSuggestedUnusedMarks = (
+  clientName: string,
+  currentMark: string,
+  allClients: any[],
+  limit: number = 8
+): string[] => {
+  const usedMarks = new Set<string>();
+  (allClients || []).forEach((c: any) => {
+    if (c.mark) {
+      usedMarks.add(String(c.mark).trim().toUpperCase());
+    }
+  });
+
+  const candidates: string[] = [];
+
+  // Parse initials from clientName
+  const cleanName = String(clientName || '').toUpperCase().replace(/[^A-Z0-9\s]/g, '').trim();
+  const words = cleanName.split(/\s+/).filter(Boolean);
+
+  if (words.length >= 2) {
+    const w1 = words[0];
+    const w2 = words[1];
+    candidates.push(w1[0] + w2[0]);
+    candidates.push(w2[0] + w1[0]);
+    if (w1.length >= 2) candidates.push(w1.slice(0, 2));
+    if (w2.length >= 2) candidates.push(w2.slice(0, 2));
+    if (w1.length >= 2) candidates.push(w1[0] + w1[w1.length - 1]);
+    if (w2.length >= 2) candidates.push(w2[0] + w2[w2.length - 1]);
+  } else if (words.length === 1 && words[0].length >= 1) {
+    const w = words[0];
+    if (w.length >= 2) candidates.push(w.slice(0, 2));
+    candidates.push(w[0] + '1');
+    candidates.push(w[0] + '2');
+    if (w.length >= 2) candidates.push(w[0] + w[w.length - 1]);
+  }
+
+  // Base initials for numbered variants
+  const base = candidates[0] || (cleanName ? cleanName[0] : 'C');
+  for (let i = 1; i <= 9; i++) {
+    candidates.push(`${base}${i}`);
+  }
+
+  // Common alphabet pairs
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for (let i = 0; i < alphabet.length; i++) {
+    for (let j = 0; j < alphabet.length; j++) {
+      if (candidates.length >= 60) break;
+      candidates.push(alphabet[i] + alphabet[j]);
+    }
+  }
+
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const currentClean = String(currentMark || '').trim().toUpperCase();
+
+  for (const cand of candidates) {
+    const uppercaseCand = cand.toUpperCase().trim();
+    if (
+      uppercaseCand &&
+      !usedMarks.has(uppercaseCand) &&
+      !seen.has(uppercaseCand) &&
+      uppercaseCand !== currentClean
+    ) {
+      seen.add(uppercaseCand);
+      result.push(uppercaseCand);
+      if (result.length >= limit) break;
+    }
+  }
+
+  return result;
+};
+
+export interface WeeklySummaryRow {
+  weekKey: string;
+  mondayObj: Date;
+  sundayObj: Date;
+  label: string;
+  weekNumber: number;
+  records: IncubatorRecord[];
+  clientCount: number;
+  clientsList: string[];
+  totalEggs: number;
+  eggsBySpecies: Record<string, number>;
+  totalScan: number;
+  scanBySpecies: Record<string, number>;
+  totalHatched: number;
+  hatchedBySpecies: Record<string, number>;
+  revenue: number;
+  overdraft: number;
+  debt: number;
+}
+
+const getWeeklySummaries = (recordsList: IncubatorRecord[]): WeeklySummaryRow[] => {
+  if (!recordsList || recordsList.length === 0) return [];
+
+  const map = new Map<string, {
+    weekKey: string;
+    mondayObj: Date;
+    sundayObj: Date;
+    label: string;
+    records: IncubatorRecord[];
+    clientSet: Set<string>;
+    eggsBySpecies: Record<string, number>;
+    scanBySpecies: Record<string, number>;
+    hatchedBySpecies: Record<string, number>;
+    revenue: number;
+    overdraft: number;
+    debt: number;
+  }>();
+
+  recordsList.forEach((rec) => {
+    const dateStr = rec.dateBrought || (rec as any).datePlaced || '';
+    if (!dateStr) return;
+
+    const cleanDate = dateStr.replace(/[\/\.]/g, '-');
+    const parts = cleanDate.split('-');
+    let year = 2026, month = 1, day = 1;
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        year = parseInt(parts[0], 10);
+        month = parseInt(parts[1], 10);
+        day = parseInt(parts[2], 10);
+      } else {
+        day = parseInt(parts[0], 10);
+        month = parseInt(parts[1], 10);
+        year = parseInt(parts[2], 10);
+        if (year < 100) year += 2000;
+      }
+    }
+    const d = new Date(year, month - 1, day);
+    if (isNaN(d.getTime())) return;
+
+    const dayOfWeek = d.getDay();
+    const diffToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+    const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - diffToMon);
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const formatShort = (dt: Date) => `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${String(dt.getFullYear()).slice(-2)}`;
+
+    const mondayKey = `${monday.getFullYear()}-${pad(monday.getMonth() + 1)}-${pad(monday.getDate())}`;
+    const label = `(${formatShort(monday)} - ${formatShort(sunday)})`;
+
+    if (!map.has(mondayKey)) {
+      map.set(mondayKey, {
+        weekKey: mondayKey,
+        mondayObj: monday,
+        sundayObj: sunday,
+        label,
+        records: [],
+        clientSet: new Set(),
+        eggsBySpecies: {},
+        scanBySpecies: {},
+        hatchedBySpecies: {},
+        revenue: 0,
+        overdraft: 0,
+        debt: 0
+      });
+    }
+
+    const group = map.get(mondayKey)!;
+    group.records.push(rec);
+
+    const clientIdentifier = rec.clientId || rec.clientMark || rec.clientName;
+    if (clientIdentifier) {
+      group.clientSet.add(clientIdentifier);
+    }
+
+    const species = rec.eggType || 'Brahma';
+    const eggCount = Number(rec.eggsCollected) || 0;
+    group.eggsBySpecies[species] = (group.eggsBySpecies[species] || 0) + eggCount;
+
+    if (rec.eggsAfterScan !== null && rec.eggsAfterScan !== undefined && String(rec.eggsAfterScan) !== '') {
+      const scanCount = Number(rec.eggsAfterScan) || 0;
+      group.scanBySpecies[species] = (group.scanBySpecies[species] || 0) + scanCount;
+    }
+
+    if (rec.chicksHatched !== null && rec.chicksHatched !== undefined && String(rec.chicksHatched) !== '') {
+      const hatchCount = Number(rec.chicksHatched) || 0;
+      group.hatchedBySpecies[species] = (group.hatchedBySpecies[species] || 0) + hatchCount;
+    }
+
+    group.revenue += Number(rec.amountPaid) || 0;
+    group.overdraft += (Number(rec.overdraftGenerated) || 0) + (Number(rec.overdraftUsed) || 0);
+
+    const totalCost = Number(rec.amountDue) || 0;
+    const paid = Number(rec.amountPaid) || 0;
+    const odUsed = Number(rec.overdraftUsed) || 0;
+    const remainingDebt = Math.max(0, totalCost - paid - odUsed);
+    group.debt += remainingDebt;
+  });
+
+  const sortedChronological = Array.from(map.values()).sort((a, b) => a.mondayObj.getTime() - b.mondayObj.getTime());
+
+  const rows: WeeklySummaryRow[] = sortedChronological.map((item, index) => {
+    const totalEggs = Object.values(item.eggsBySpecies).reduce((a, b) => a + b, 0);
+    const totalScan = Object.values(item.scanBySpecies).reduce((a, b) => a + b, 0);
+    const totalHatched = Object.values(item.hatchedBySpecies).reduce((a, b) => a + b, 0);
+
+    return {
+      weekKey: item.weekKey,
+      mondayObj: item.mondayObj,
+      sundayObj: item.sundayObj,
+      label: item.label,
+      weekNumber: index + 1,
+      records: item.records,
+      clientCount: item.clientSet.size,
+      clientsList: Array.from(item.clientSet),
+      totalEggs,
+      eggsBySpecies: item.eggsBySpecies,
+      totalScan,
+      scanBySpecies: item.scanBySpecies,
+      totalHatched,
+      hatchedBySpecies: item.hatchedBySpecies,
+      revenue: item.revenue,
+      overdraft: item.overdraft,
+      debt: item.debt
+    };
+  });
+
+  return rows.sort((a, b) => b.mondayObj.getTime() - a.mondayObj.getTime());
+};
+
+interface GaugeItem {
+  label: string;
+  subLabel: string;
+  pct: number;
+  hatched: number;
+  scanned: number;
+  collected: number;
+  batches: number;
+  colorTheme: {
+    ringStroke: string;
+    bgRing: string;
+    text: string;
+    bgBadge: string;
+    gradientStart: string;
+    gradientEnd: string;
+  };
+}
+
+const parseRecordDate = (dateStr: string | undefined | null): Date | null => {
+  if (!dateStr) return null;
+  const str = String(dateStr).trim();
+  if (!str) return null;
+
+  const direct = new Date(str);
+  if (!isNaN(direct.getTime()) && str.length >= 8) {
+    return direct;
+  }
+
+  const clean = str.replace(/[\/\.]/g, '-');
+  const parts = clean.split('-');
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      if (!isNaN(d.getTime())) return d;
+    } else {
+      let y = parseInt(parts[2], 10);
+      if (y < 100) y += 2000;
+      const d = new Date(y, parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+  return null;
+};
+
+const HatchingCircleGauge: React.FC<{ item: GaugeItem; isVisible: boolean }> = ({ item, isVisible }) => {
+  const [displayedPct, setDisplayedPct] = useState(0);
+  const [animActive, setAnimActive] = useState(false);
+
+  useEffect(() => {
+    setAnimActive(false);
+    setDisplayedPct(0);
+
+    const timer = setTimeout(() => {
+      setAnimActive(true);
+    }, 120);
+
+    return () => clearTimeout(timer);
+  }, [item.pct, isVisible]);
+
+  useEffect(() => {
+    if (!animActive || !isVisible) {
+      setDisplayedPct(0);
+      return;
+    }
+
+    let start = 0;
+    const end = item.pct;
+    const duration = 1100;
+    const startTime = performance.now();
+
+    const animate = (currentTime: number) => {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      setDisplayedPct(easedProgress * end);
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        setDisplayedPct(end);
+      }
+    };
+
+    requestAnimationFrame(animate);
+  }, [animActive, isVisible, item.pct]);
+
+  const radius = 52;
+  const strokeWidth = 10;
+  const circumference = 2 * Math.PI * radius;
+  const targetOffset = circumference - (circumference * item.pct) / 100;
+  const strokeDashoffset = animActive && isVisible ? targetOffset : circumference;
+  const gradientId = `grad_${item.label.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+  return (
+    <div className="bg-slate-50/80 border border-slate-100 rounded-2xl p-5 flex flex-col items-center justify-between text-center space-y-4 hover:shadow-xs transition-all">
+      <div className="w-full">
+        <span className="text-xs font-black text-slate-800 uppercase tracking-tight block">
+          {item.label}
+        </span>
+        <span className="text-[11px] font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full inline-block mt-1">
+          {item.subLabel}
+        </span>
+      </div>
+
+      {/* Circle Graphic */}
+      <div className="relative w-36 h-36 flex items-center justify-center my-1">
+        <svg className="w-full h-full transform -rotate-90 origin-center" viewBox="0 0 120 120">
+          <defs>
+            <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor={item.colorTheme.gradientStart} />
+              <stop offset="100%" stopColor={item.colorTheme.gradientEnd} />
+            </linearGradient>
+          </defs>
+
+          {/* Background Ring */}
+          <circle
+            cx="60"
+            cy="60"
+            r={radius}
+            stroke={item.colorTheme.bgRing}
+            strokeWidth={strokeWidth}
+            fill="transparent"
+          />
+
+          {/* Foreground Animated Ring */}
+          <circle
+            cx="60"
+            cy="60"
+            r={radius}
+            stroke={`url(#${gradientId})`}
+            strokeWidth={strokeWidth}
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+            fill="transparent"
+            style={{
+              transition: 'stroke-dashoffset 1.3s cubic-bezier(0.34, 1.25, 0.64, 1)',
+            }}
+          />
+        </svg>
+
+        {/* Center Percentage Digit */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-2">
+          <span className={`text-2xl sm:text-3xl font-black ${item.colorTheme.text} tracking-tighter`}>
+            {displayedPct.toFixed(1)}%
+          </span>
+          <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">
+            Hatch Rate
+          </span>
+        </div>
+      </div>
+
+      {/* Stats Footnote */}
+      <div className="w-full space-y-2 pt-2 border-t border-slate-200/60">
+        <div className={`inline-block px-3 py-1 rounded-full border text-xs font-extrabold ${item.colorTheme.bgBadge}`}>
+          {item.hatched.toLocaleString()} Hatched / {item.scanned.toLocaleString()} Scanned
+        </div>
+
+        <div className="flex justify-between items-center text-[11px] text-slate-500 font-medium px-1">
+          <span>Total Eggs Brought:</span>
+          <span className="font-extrabold text-slate-800">{item.collected.toLocaleString()}</span>
+        </div>
+        <div className="flex justify-between items-center text-[11px] text-slate-500 font-medium px-1">
+          <span>Batches Recorded:</span>
+          <span className="font-extrabold text-slate-800">{item.batches}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export const HatchingAnalyticsSection: React.FC<{ records: IncubatorRecord[] }> = ({ records }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(true);
+  const [selectedYearMode, setSelectedYearMode] = useState<string>('auto');
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+          }
+        });
+      },
+      { threshold: 0.05 }
+    );
+
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+
+    return () => {
+      if (containerRef.current) {
+        observer.unobserve(containerRef.current);
+      }
+    };
+  }, []);
+
+  // Compute available years and active records
+  const availableYears = React.useMemo(() => {
+    const yearsSet = new Set<number>();
+    (records || []).forEach((r) => {
+      const dt = parseRecordDate(r.dateBrought || r.day8Date || r.day21Date);
+      if (dt) yearsSet.add(dt.getFullYear());
+    });
+    const sorted = Array.from(yearsSet).sort((a, b) => b - a);
+    return sorted;
+  }, [records]);
+
+  const stats = React.useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+
+    // Determine target year
+    let targetYear = currentYear;
+    if (selectedYearMode === 'auto') {
+      const currentYearHasData = (records || []).some((r) => {
+        const dt = parseRecordDate(r.dateBrought || r.day8Date || r.day21Date);
+        return dt && dt.getFullYear() === currentYear;
+      });
+
+      if (!currentYearHasData && availableYears.length > 0) {
+        targetYear = availableYears[0]; // pick latest available year with data
+      }
+    } else if (selectedYearMode !== 'all') {
+      targetYear = parseInt(selectedYearMode, 10);
+    }
+
+    // Filter valid records with dates
+    const parsedRecords = (records || [])
+      .map((rec) => ({
+        rec,
+        dt: parseRecordDate(rec.dateBrought || rec.day8Date || rec.day21Date),
+        collected: Number(rec.eggsCollected) || 0,
+        scanned: (rec.eggsAfterScan !== null && rec.eggsAfterScan !== undefined && rec.eggsAfterScan !== '')
+          ? Number(rec.eggsAfterScan)
+          : (rec.chicksHatched !== null && rec.chicksHatched !== undefined && rec.chicksHatched !== '' ? Number(rec.eggsCollected) : 0),
+        hatched: (rec.chicksHatched !== null && rec.chicksHatched !== undefined && rec.chicksHatched !== '')
+          ? Number(rec.chicksHatched)
+          : 0,
+      }))
+      .filter((item) => item.dt !== null);
+
+    // 1. YEARLY AGGREGATION
+    const yearlyItems = selectedYearMode === 'all'
+      ? parsedRecords
+      : parsedRecords.filter((item) => item.dt!.getFullYear() === targetYear);
+
+    let yearly = { collected: 0, scanned: 0, hatched: 0, count: 0 };
+    yearlyItems.forEach((item) => {
+      yearly.collected += item.collected;
+      yearly.scanned += item.scanned;
+      yearly.hatched += item.hatched;
+      yearly.count += 1;
+    });
+
+    // 2. MONTHLY AGGREGATION
+    // Find latest active month in target year
+    let targetMonth = now.getMonth();
+    if ((selectedYearMode === 'auto' && targetYear !== currentYear) || selectedYearMode !== '2026') {
+      const monthsInTargetYear = yearlyItems.map((i) => i.dt!.getMonth());
+      if (monthsInTargetYear.length > 0) {
+        targetMonth = Math.max(...monthsInTargetYear);
+      }
+    }
+
+    const monthlyItems = yearlyItems.filter((item) => item.dt!.getMonth() === targetMonth);
+    let monthly = { collected: 0, scanned: 0, hatched: 0, count: 0 };
+    monthlyItems.forEach((item) => {
+      monthly.collected += item.collected;
+      monthly.scanned += item.scanned;
+      monthly.hatched += item.hatched;
+      monthly.count += 1;
+    });
+
+    // 3. WEEKLY AGGREGATION
+    // Find latest active week or current calendar week
+    let latestWeekStart: Date;
+    let latestWeekEnd: Date;
+
+    if ((selectedYearMode === 'auto' && targetYear !== currentYear) && monthlyItems.length > 0) {
+      const latestItemDt = new Date(Math.max(...monthlyItems.map((i) => i.dt!.getTime())));
+      const dayOfWeek = latestItemDt.getDay();
+      const diffToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      latestWeekStart = new Date(latestItemDt.getFullYear(), latestItemDt.getMonth(), latestItemDt.getDate() - diffToMon, 0, 0, 0);
+      latestWeekEnd = new Date(latestWeekStart.getFullYear(), latestWeekStart.getMonth(), latestWeekStart.getDate() + 6, 23, 59, 59);
+    } else {
+      const dayOfWeek = now.getDay();
+      const diffToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      latestWeekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMon, 0, 0, 0);
+      latestWeekEnd = new Date(latestWeekStart.getFullYear(), latestWeekStart.getMonth(), latestWeekStart.getDate() + 6, 23, 59, 59);
+    }
+
+    const weeklyItems = parsedRecords.filter((item) => item.dt! >= latestWeekStart && item.dt! <= latestWeekEnd);
+    let weekly = { collected: 0, scanned: 0, hatched: 0, count: 0 };
+    weeklyItems.forEach((item) => {
+      weekly.collected += item.collected;
+      weekly.scanned += item.scanned;
+      weekly.hatched += item.hatched;
+      weekly.count += 1;
+    });
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const weekRangeLabel = `${pad(latestWeekStart.getDate())}/${pad(latestWeekStart.getMonth() + 1)} - ${pad(latestWeekEnd.getDate())}/${pad(latestWeekEnd.getMonth() + 1)}/${latestWeekEnd.getFullYear()}`;
+
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const monthLabel = `${monthNames[targetMonth]} ${targetYear}`;
+    const yearLabel = selectedYearMode === 'all' ? 'All-Time Records' : `Year ${targetYear}`;
+
+    const calcPct = (hatched: number, scanned: number) => {
+      if (!scanned || scanned <= 0) return 0;
+      return Math.min(100, Math.round((hatched / scanned) * 1000) / 10);
+    };
+
+    return {
+      targetYear,
+      weekly: {
+        label: '1. Weekly Hatching Rate',
+        subLabel: weekRangeLabel,
+        pct: calcPct(weekly.hatched, weekly.scanned),
+        hatched: weekly.hatched,
+        scanned: weekly.scanned,
+        collected: weekly.collected,
+        batches: weekly.count,
+        colorTheme: {
+          ringStroke: '#059669',
+          bgRing: '#d1fae5',
+          text: 'text-emerald-700',
+          bgBadge: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+          gradientStart: '#10b981',
+          gradientEnd: '#047857',
+        },
+      },
+      monthly: {
+        label: '2. Monthly Hatching Rate',
+        subLabel: monthLabel,
+        pct: calcPct(monthly.hatched, monthly.scanned),
+        hatched: monthly.hatched,
+        scanned: monthly.scanned,
+        collected: monthly.collected,
+        batches: monthly.count,
+        colorTheme: {
+          ringStroke: '#4f46e5',
+          bgRing: '#e0e7ff',
+          text: 'text-indigo-700',
+          bgBadge: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+          gradientStart: '#6366f1',
+          gradientEnd: '#3730a3',
+        },
+      },
+      yearly: {
+        label: '3. Yearly Hatching Rate',
+        subLabel: yearLabel,
+        pct: calcPct(yearly.hatched, yearly.scanned),
+        hatched: yearly.hatched,
+        scanned: yearly.scanned,
+        collected: yearly.collected,
+        batches: yearly.count,
+        colorTheme: {
+          ringStroke: '#d97706',
+          bgRing: '#fef3c7',
+          text: 'text-amber-700',
+          bgBadge: 'bg-amber-50 text-amber-900 border-amber-200',
+          gradientStart: '#f59e0b',
+          gradientEnd: '#b45309',
+        },
+      },
+    };
+  }, [records, selectedYearMode, availableYears]);
+
+  return (
+    <div ref={containerRef} className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-6 text-left">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-emerald-50 text-emerald-700 rounded-xl">
+              <Sparkles size={18} />
+            </div>
+            <h3 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight">
+              Post-Scan Hatching Percentage
+            </h3>
+          </div>
+          <p className="text-xs font-semibold text-slate-500 mt-1 ml-9">
+            Calculated as (Total Chicks Hatched / Total Eggs Scanned) × 100% in real-time.
+          </p>
+        </div>
+
+        {/* Period Selector Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">
+            Period:
+          </span>
+          <select
+            value={selectedYearMode}
+            onChange={(e) => setSelectedYearMode(e.target.value)}
+            className="bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-2xs"
+          >
+            <option value="auto">⚡ Auto (Active Dataset: {stats.targetYear})</option>
+            <option value="2026">2026 (Real-Time Current)</option>
+            {availableYears.map((y) => (
+              <option key={y} value={String(y)}>
+                Year {y}
+              </option>
+            ))}
+            <option value="all">All-Time Combined</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <HatchingCircleGauge item={stats.weekly} isVisible={isVisible} />
+        <HatchingCircleGauge item={stats.monthly} isVisible={isVisible} />
+        <HatchingCircleGauge item={stats.yearly} isVisible={isVisible} />
+      </div>
+    </div>
+  );
+};
 
 export default function IncubatorMod({
   data,
@@ -33,6 +688,8 @@ export default function IncubatorMod({
   token,
   selectedEditRecord,
   setSelectedEditRecord,
+  selectedClientForEdit,
+  setSelectedClientForEdit,
   quickFormKey,
   setQuickFormKey
 }: IncubatorModProps) {
@@ -51,10 +708,10 @@ export default function IncubatorMod({
   const [showBatchForm, setShowBatchForm] = useState(false);
 
   // Sorting configurations
-  // Options: 'oldest_brought' | 'newest_brought' | 'client_name_az' | 'amount_owed_desc' | 'egg_type' | 'hatcher_transit' | 'to_candle' | 'just_hatched'
+  // Options: 'newest_brought' | 'oldest_brought' | 'client_name_az' | 'amount_owed_desc' | 'egg_type' | 'hatcher_transit' | 'to_candle' | 'just_hatched'
   const [activeSort, setActiveSort] = useState<
-    'oldest_brought' | 'newest_brought' | 'client_name_az' | 'amount_owed_desc' | 'egg_type' | 'hatcher_transit' | 'to_candle' | 'just_hatched'
-  >('oldest_brought');
+    'newest_brought' | 'oldest_brought' | 'client_name_az' | 'amount_owed_desc' | 'egg_type' | 'hatcher_transit' | 'to_candle' | 'just_hatched'
+  >('newest_brought');
 
   // Status Filter for Master Table: 'all' | 'active' | 'hatched'
   const [batchStatusFilter, setBatchStatusFilter] = useState<'all' | 'active' | 'hatched'>('all');
@@ -140,16 +797,34 @@ export default function IncubatorMod({
   // Form states: Edit Client
   const [editingClient, setEditingClient] = useState<any | null>(null);
   const [editClientName, setEditClientName] = useState('');
+  const [editClientMark, setEditClientMark] = useState('');
   const [editClientPhone, setEditClientPhone] = useState('');
   const [editClientLoc, setEditClientLoc] = useState('');
   const [editClientOverdraft, setEditClientOverdraft] = useState('');
   const [editClientSpecialCase, setEditClientSpecialCase] = useState<SpecialCase>('Standard');
+  const [clientEditError, setClientEditError] = useState('');
+  const [clientEditSuccess, setClientEditSuccess] = useState('');
+
+  const openEditClientModal = (c: any) => {
+    setEditingClient(c);
+    setEditClientName(c.name || '');
+    setEditClientMark(c.mark || '');
+    setEditClientPhone(c.phone || '');
+    setEditClientLoc(c.location || '');
+    setEditClientOverdraft(String(c.overdraft || 0));
+    setEditClientSpecialCase((c.specialCase as SpecialCase) || 'Standard');
+    setClientEditError('');
+    setClientEditSuccess('');
+    setErrorMsg('');
+    setSuccessMsg('');
+  };
 
   // Prompt modal for special case scope change ('from_today' vs 'all_time')
   const [specialCasePromptData, setSpecialCasePromptData] = useState<{
     client: any;
     newSpecialCase: SpecialCase;
     name: string;
+    mark: string;
     phone: string;
     location: string;
     overdraft: number;
@@ -157,6 +832,82 @@ export default function IncubatorMod({
 
   // Form states: New Batch
   const [batchClientId, setBatchClientId] = useState('');
+  const [clientSearchQuery, setClientSearchQuery] = useState('');
+  const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
+  const clientDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (clientDropdownRef.current && !clientDropdownRef.current.contains(event.target as Node)) {
+        setIsClientDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const filteredBatchClients = data.clients.filter(c => {
+    const query = clientSearchQuery.trim().toLowerCase();
+    if (!query) return true;
+    const nameMatch = c.name?.toLowerCase().includes(query);
+    const markMatch = c.mark?.toLowerCase().includes(query);
+    const phoneMatch = c.phone?.toLowerCase().includes(query);
+    return nameMatch || markMatch || phoneMatch;
+  }).sort((a, b) => {
+    const query = clientSearchQuery.trim().toLowerCase();
+    if (!query) return a.name.localeCompare(b.name);
+
+    const aMarkExact = a.mark?.toLowerCase() === query;
+    const bMarkExact = b.mark?.toLowerCase() === query;
+    if (aMarkExact && !bMarkExact) return -1;
+    if (!aMarkExact && bMarkExact) return 1;
+
+    const aMarkStarts = a.mark?.toLowerCase().startsWith(query);
+    const bMarkStarts = b.mark?.toLowerCase().startsWith(query);
+    if (aMarkStarts && !bMarkStarts) return -1;
+    if (!aMarkStarts && bMarkStarts) return 1;
+
+    const aNameStarts = a.name?.toLowerCase().startsWith(query);
+    const bNameStarts = b.name?.toLowerCase().startsWith(query);
+    if (aNameStarts && !bNameStarts) return -1;
+    if (!aNameStarts && bNameStarts) return 1;
+
+    return a.name.localeCompare(b.name);
+  });
+
+  const handleClientSearchChange = (val: string) => {
+    setClientSearchQuery(val);
+    setIsClientDropdownOpen(true);
+
+    const q = val.trim().toLowerCase();
+    const matchedClient = data.clients.find(c => 
+      c.id === val ||
+      c.name.toLowerCase() === q ||
+      c.mark.toLowerCase() === q ||
+      `[${c.mark.toLowerCase()}] ${c.name.toLowerCase()}` === q ||
+      `${c.name.toLowerCase()} (${c.mark.toLowerCase()})` === q
+    );
+
+    if (matchedClient) {
+      setBatchClientId(matchedClient.id);
+      if (matchedClient.specialCase) {
+        setBatchSpecialCase(matchedClient.specialCase as SpecialCase);
+      }
+    } else {
+      setBatchClientId('');
+    }
+  };
+
+  const handleSelectBatchClient = (client: Client) => {
+    setBatchClientId(client.id);
+    setClientSearchQuery(`[${client.mark}] ${client.name}`);
+    if (client.specialCase) {
+      setBatchSpecialCase(client.specialCase as SpecialCase);
+    }
+    setIsClientDropdownOpen(false);
+  };
   const [batchDate, setBatchDate] = useState(new Date().toISOString().split('T')[0]);
   const [batchEggs, setBatchEggs] = useState('');
   const [batchSpecialCase, setBatchSpecialCase] = useState<SpecialCase>('Standard');
@@ -166,6 +917,61 @@ export default function IncubatorMod({
   const [overdraftOption, setOverdraftOption] = useState<'none' | 'full' | 'custom'>('none');
   const [customOverdraftAmount, setCustomOverdraftAmount] = useState('');
   const [batchAmountPaid, setBatchAmountPaid] = useState('');
+
+  // Auto-Save Drafts for Client & Batch Forms
+  const clientFormValues = React.useMemo(() => ({
+    clientName,
+    clientMark,
+    clientPhone,
+    clientLoc,
+    clientOverdraftVal,
+    clientSpecialCase
+  }), [clientName, clientMark, clientPhone, clientLoc, clientOverdraftVal, clientSpecialCase]);
+
+  const { hasRestoredDraft: hasClientDraft, clearDraft: clearClientDraft } = useFormAutoSave(
+    'nvf_draft_incubator_client',
+    clientFormValues,
+    (draft) => {
+      if (draft.clientName !== undefined) setClientName(draft.clientName);
+      if (draft.clientMark !== undefined) setClientMark(draft.clientMark);
+      if (draft.clientPhone !== undefined) setClientPhone(draft.clientPhone);
+      if (draft.clientLoc !== undefined) setClientLoc(draft.clientLoc);
+      if (draft.clientOverdraftVal !== undefined) setClientOverdraftVal(draft.clientOverdraftVal);
+      if (draft.clientSpecialCase !== undefined) setClientSpecialCase(draft.clientSpecialCase);
+    }
+  );
+
+  const batchFormValues = React.useMemo(() => ({
+    batchClientId,
+    clientSearchQuery,
+    batchDate,
+    batchEggs,
+    batchSpecialCase,
+    batchCustomRate,
+    batchNotes,
+    batchEggType,
+    overdraftOption,
+    customOverdraftAmount,
+    batchAmountPaid
+  }), [batchClientId, clientSearchQuery, batchDate, batchEggs, batchSpecialCase, batchCustomRate, batchNotes, batchEggType, overdraftOption, customOverdraftAmount, batchAmountPaid]);
+
+  const { hasRestoredDraft: hasBatchDraft, clearDraft: clearBatchDraft } = useFormAutoSave(
+    'nvf_draft_incubator_batch',
+    batchFormValues,
+    (draft) => {
+      if (draft.batchClientId !== undefined) setBatchClientId(draft.batchClientId);
+      if (draft.clientSearchQuery !== undefined) setClientSearchQuery(draft.clientSearchQuery);
+      if (draft.batchDate !== undefined) setBatchDate(draft.batchDate);
+      if (draft.batchEggs !== undefined) setBatchEggs(draft.batchEggs);
+      if (draft.batchSpecialCase !== undefined) setBatchSpecialCase(draft.batchSpecialCase);
+      if (draft.batchCustomRate !== undefined) setBatchCustomRate(draft.batchCustomRate);
+      if (draft.batchNotes !== undefined) setBatchNotes(draft.batchNotes);
+      if (draft.batchEggType !== undefined) setBatchEggType(draft.batchEggType);
+      if (draft.overdraftOption !== undefined) setOverdraftOption(draft.overdraftOption);
+      if (draft.customOverdraftAmount !== undefined) setCustomOverdraftAmount(draft.customOverdraftAmount);
+      if (draft.batchAmountPaid !== undefined) setBatchAmountPaid(draft.batchAmountPaid);
+    }
+  );
 
   // Modal edit states
   const [editDateBrought, setEditDateBrought] = useState('');
@@ -193,8 +999,27 @@ export default function IncubatorMod({
       setActiveTabSub('records');
       setShowBatchForm(true);
       setQuickFormKey(null);
+    } else if (quickFormKey === 'active_batches' || quickFormKey === 'batches_table') {
+      setActiveTabSub('records');
+      setBatchStatusFilter('active');
+      setQuickFormKey(null);
+      setTimeout(() => {
+        const el = document.getElementById('incubator_records_section') || document.getElementById('incubator_table_wrapper') || document.getElementById('tab_sub_records');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
     }
   }, [quickFormKey, setQuickFormKey]);
+
+  // Open client edit modal when selected from global search
+  useEffect(() => {
+    if (selectedClientForEdit) {
+      setActiveTabSub('clients');
+      openEditClientModal(selectedClientForEdit);
+      if (setSelectedClientForEdit) {
+        setSelectedClientForEdit(null);
+      }
+    }
+  }, [selectedClientForEdit, setSelectedClientForEdit]);
 
   // Initial edit modal mapping - with local mirroring and ref decoupling
   const [localEditRecord, setLocalEditRecord] = useState<IncubatorRecord | null>(null);
@@ -226,8 +1051,52 @@ export default function IncubatorMod({
     setSelectedEditRecord(null);
   };
 
+  // Deletion Confirmation Modal States
+  const [recordToDelete, setRecordToDelete] = useState<IncubatorRecord | null>(null);
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState<boolean>(false);
+  const [showBulkPaidConfirm, setShowBulkPaidConfirm] = useState<boolean>(false);
+
   // Client Statement & Compilation ledger states
   const [selectedLedgerClient, setSelectedLedgerClient] = useState<any | null>(null);
+
+  // Selected week summary modal state
+  const [selectedWeekSummary, setSelectedWeekSummary] = useState<WeeklySummaryRow | null>(null);
+
+  // Auto-calculated weekly totals summaries from all incubator records
+  const weeklySummaries = React.useMemo(() => {
+    return getWeeklySummaries(data.incubator_records || []);
+  }, [data.incubator_records]);
+
+  // Grand total calculations across all recorded weeks
+  const grandTotals = React.useMemo(() => {
+    let totalEggs = 0;
+    let totalScan = 0;
+    let totalHatched = 0;
+    let totalRevenue = 0;
+    let totalOverdraft = 0;
+    let totalDebt = 0;
+    const clientSet = new Set<string>();
+
+    weeklySummaries.forEach(row => {
+      totalEggs += row.totalEggs;
+      totalScan += row.totalScan;
+      totalHatched += row.totalHatched;
+      totalRevenue += row.revenue;
+      totalOverdraft += row.overdraft;
+      totalDebt += row.debt;
+      row.clientsList.forEach(c => clientSet.add(c));
+    });
+
+    return {
+      totalEggs,
+      totalScan,
+      totalHatched,
+      totalRevenue,
+      totalOverdraft,
+      totalDebt,
+      totalClients: clientSet.size
+    };
+  }, [weeklySummaries]);
 
   // Auto suggest unique initials marking when typing client's name
   const handleClientNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -263,8 +1132,16 @@ export default function IncubatorMod({
     setSuccessMsg('');
 
     const trimmedMark = clientMark.trim().toUpperCase();
-    if (!clientName.trim() || trimmedMark.length !== 2 || !clientPhone.trim() || !clientLoc.trim()) {
-      setErrorMsg('Please complete all fields. Client Mark must be exactly 2 letters.');
+    if (!clientName.trim() || trimmedMark.length !== 2 || !clientPhone.trim()) {
+      setErrorMsg('Please complete name, unique 2-letter mark, and phone number.');
+      return;
+    }
+
+    const duplicateClient = data.clients?.find(
+      (c: any) => c.mark && c.mark.toUpperCase() === trimmedMark
+    );
+    if (duplicateClient) {
+      setErrorMsg(`Client mark [${trimmedMark}] is already assigned to ${duplicateClient.name}. Client marks must be unique!`);
       return;
     }
 
@@ -301,6 +1178,7 @@ export default function IncubatorMod({
       triggerRefresh();
       
       // Cleanup
+      clearClientDraft();
       setClientName('');
       setClientMark('');
       setClientPhone('');
@@ -321,14 +1199,33 @@ export default function IncubatorMod({
     if (!editingClient) return;
     setErrorMsg('');
     setSuccessMsg('');
+    setClientEditError('');
+    setClientEditSuccess('');
 
-    if (!editClientName.trim() || !editClientPhone.trim() || !editClientLoc.trim()) {
-      setErrorMsg('Please complete name, phone, and location fields.');
+    if (!editClientName.trim() || !editClientMark.trim()) {
+      const msg = 'Please complete name and unique client mark fields.';
+      setClientEditError(msg);
+      setErrorMsg(msg);
+      return;
+    }
+
+    const trimmedMark = editClientMark.trim().toUpperCase();
+
+    // Check duplicate client mark
+    const duplicateClient = data.clients?.find(
+      (c: any) => c.mark && c.mark.toUpperCase() === trimmedMark && c.id !== editingClient.id
+    );
+    if (duplicateClient) {
+      const msg = `Client mark [${trimmedMark}] is already assigned to ${duplicateClient.name}. Client marks must be unique!`;
+      setClientEditError(msg);
+      setErrorMsg(msg);
       return;
     }
 
     if (editClientOverdraft && (Number(editClientOverdraft) < 0 || isNaN(Number(editClientOverdraft)))) {
-      setErrorMsg('Overdraft credit value cannot be negative.');
+      const msg = 'Overdraft credit value cannot be negative.';
+      setClientEditError(msg);
+      setErrorMsg(msg);
       return;
     }
 
@@ -339,9 +1236,10 @@ export default function IncubatorMod({
       setSpecialCasePromptData({
         client: editingClient,
         newSpecialCase: editClientSpecialCase,
-        name: editClientName,
-        phone: editClientPhone,
-        location: editClientLoc,
+        name: editClientName.trim(),
+        mark: trimmedMark,
+        phone: editClientPhone ? editClientPhone.trim() : '',
+        location: editClientLoc ? editClientLoc.trim() : '',
         overdraft: Number(editClientOverdraft) || 0
       });
       return;
@@ -357,9 +1255,10 @@ export default function IncubatorMod({
           'Authorization': token
         },
         body: JSON.stringify({
-          name: editClientName,
-          phone: editClientPhone,
-          location: editClientLoc,
+          name: editClientName.trim(),
+          mark: trimmedMark,
+          phone: editClientPhone ? editClientPhone.trim() : '',
+          location: editClientLoc ? editClientLoc.trim() : '',
           overdraft: Number(editClientOverdraft) || 0,
           specialCase: editClientSpecialCase
         })
@@ -370,11 +1269,17 @@ export default function IncubatorMod({
         throw new Error(resData.error || 'Failed to update client.');
       }
 
-      setSuccessMsg(`Client [${resData.mark}] details updated successfully!`);
+      const msg = `Client [${resData.mark || trimmedMark}] details updated successfully across all database entries!`;
+      setSuccessMsg(msg);
+      setClientEditSuccess(msg);
       triggerRefresh();
-      setEditingClient(null);
+      setTimeout(() => {
+        setEditingClient(null);
+      }, 250);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Error updating client records.');
+      const errMsg = err.message || 'Error updating client records.';
+      setErrorMsg(errMsg);
+      setClientEditError(errMsg);
     } finally {
       setLoading(false);
     }
@@ -383,9 +1288,24 @@ export default function IncubatorMod({
   // Handle Special Case Scope Confirmation from Prompt Modal
   const handleConfirmSpecialCaseScope = async (scope: 'from_today' | 'all_time') => {
     if (!specialCasePromptData) return;
+    
+    const targetMark = specialCasePromptData.mark.toUpperCase();
+    const duplicateClient = data.clients?.find(
+      (c: any) => c.mark && c.mark.toUpperCase() === targetMark && c.id !== specialCasePromptData.client.id
+    );
+    if (duplicateClient) {
+      const msg = `Client mark [${targetMark}] is already assigned to ${duplicateClient.name}. Client marks must be unique!`;
+      setErrorMsg(msg);
+      setClientEditError(msg);
+      setSpecialCasePromptData(null);
+      return;
+    }
+
     setLoading(true);
     setErrorMsg('');
     setSuccessMsg('');
+    setClientEditError('');
+    setClientEditSuccess('');
 
     try {
       const res = await fetch(`/api/clients/${specialCasePromptData.client.id}`, {
@@ -396,6 +1316,7 @@ export default function IncubatorMod({
         },
         body: JSON.stringify({
           name: specialCasePromptData.name,
+          mark: specialCasePromptData.mark,
           phone: specialCasePromptData.phone,
           location: specialCasePromptData.location,
           overdraft: specialCasePromptData.overdraft,
@@ -409,17 +1330,23 @@ export default function IncubatorMod({
         throw new Error(resData.error || 'Failed to update client special case.');
       }
 
+      let msg = '';
       if (scope === 'all_time') {
-        setSuccessMsg(`Client [${resData.mark}] updated to "${specialCasePromptData.newSpecialCase}". All historical egg batches recalculated!`);
+        msg = `Client [${resData.mark}] updated to "${specialCasePromptData.newSpecialCase}". All historical egg batches recalculated!`;
       } else {
-        setSuccessMsg(`Client [${resData.mark}] updated to "${specialCasePromptData.newSpecialCase}". Will apply to current/future batches from today.`);
+        msg = `Client [${resData.mark}] updated to "${specialCasePromptData.newSpecialCase}". Will apply to current/future batches from today.`;
       }
 
+      setSuccessMsg(msg);
+      setClientEditSuccess(msg);
       triggerRefresh();
       setEditingClient(null);
       setSpecialCasePromptData(null);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Error updating client special case.');
+      const errMsg = err.message || 'Error updating client special case.';
+      setErrorMsg(errMsg);
+      setClientEditError(errMsg);
+      setSpecialCasePromptData(null);
     } finally {
       setLoading(false);
     }
@@ -442,7 +1369,11 @@ export default function IncubatorMod({
     setSuccessMsg('');
 
     if (!batchClientId || !batchDate || !batchEggs) {
-      setErrorMsg('Please select client, date brought, and egg count.');
+      if (!batchClientId) {
+        setErrorMsg('Please select a registered client account or type a matching client name/mark.');
+      } else {
+        setErrorMsg('Please select client, date brought, and egg count.');
+      }
       return;
     }
 
@@ -518,7 +1449,10 @@ export default function IncubatorMod({
       triggerRefresh();
 
       // Reset
+      clearBatchDraft();
       setBatchClientId('');
+      setClientSearchQuery('');
+      setIsClientDropdownOpen(false);
       setBatchEggs('');
       setBatchSpecialCase('Standard');
       setBatchCustomRate('');
@@ -603,23 +1537,45 @@ export default function IncubatorMod({
     }
   };
 
-  // Delete Incubator Record
-  const handleDeleteRecord = async (id: string) => {
-    if (!window.confirm('Are you absolutely sure you want to delete this incubator batch? All associated scan entries will be lost.')) return;
+  // Delete Incubator Record handler (triggers in-app confirm modal)
+  const handleDeleteRecord = (id: string) => {
+    const found = (data.incubator_records || []).find(r => r.id === id) || localEditRecord;
+    if (found) {
+      setRecordToDelete(found);
+    }
+  };
+
+  const confirmDeleteSingleRecord = async (id: string) => {
+    setLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await fetch(`/api/incubator/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': token }
       });
-      if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success !== false) {
+        // Explicit deletion success check
+        console.log(`[DELETION SUCCESS CHECK] Incubator record ID '${id}' was successfully removed from the server database.`);
+        setRecordToDelete(null);
         handleCloseEditModal();
-        triggerRefresh();
+        setSuccessMsg(`✓ Deletion Success: Incubator batch (${id}) successfully removed from server.`);
+        
+        // Immediately refresh database state so UI table updates
+        if (triggerRefresh) {
+          triggerRefresh();
+        }
       } else {
-        const err = await res.json();
-        alert(err.error || 'Deletion has failed.');
+        const errMsg = data.error || 'Deletion has failed on the server.';
+        console.error(`[DELETION ERROR] Server failed to delete incubator record ${id}:`, errMsg);
+        setErrorMsg(errMsg);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('[DELETION EXCEPTION] Error occurred while deleting batch:', e);
+      setErrorMsg(e.message || 'Error occurred while deleting batch.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -632,114 +1588,83 @@ export default function IncubatorMod({
     window.open(url, '_blank');
   };
 
-  // 1-Click Excel / Google Sheets Template Download with live auto-calculating Formulas per row
-  const downloadSampleCSV = () => {
-    // Generate headers and sample rows featuring Excel / Google Sheet formulas that compute dynamically in real-time
-    const headers = "Day/Date (Day 1),Client Name (Client Mark),Number of Eggs,Candling Date (Day 8),Transfer into Hatcher (Day 18),Hatching Date (Day 21),Amount Due (FCFA),Amount Paid (FCFA),Number of Chicks Hatched,Clients Contact\n";
-    
-    // Rows 2 & 3: prefilled sample data to show how it calculates
-    const row2 = '2026-06-02,John Doe (JD),100,"=IF(A2="""","""",A2+7)","=IF(A2="""","""",A2+17)","=IF(A2="""","""",A2+20)","=IF(C2="""","""",C2*200)",15000,85,677112233\n';
-    const row3 = '2026-06-05,Alice Smith (AS),150,"=IF(A3="""","""",A3+7)","=IF(A3="""","""",A3+17)","=IF(A3="""","""",A3+20)","=IF(C3="""","""",C3*200)",20000,128,655443322\n';
-    
-    // Rows 4 to 20: empty placeholder rows pre-configured with formulas so the sheet auto-computes as soon as the user enters Day 1 and Number of Eggs!
-    let formulaRows = "";
-    for (let r = 4; r <= 20; r++) {
-      formulaRows += `,"",,"=IF(A${r}="""","""",A${r}+7)","=IF(A${r}="""","""",A${r}+17)","=IF(A${r}="""","""",A${r}+20)","=IF(C${r}="""","""",C${r}*200)",,,\n`;
-    }
-
-    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
-      + encodeURIComponent(headers + row2 + row3 + formulaRows);
-
-    const link = document.createElement("a");
-    link.setAttribute("href", csvContent);
-    link.setAttribute("download", "incubator_book_template_with_formulas.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // 1-Click Excel / CSV Template Download
+  const downloadSampleTemplate = (format: 'xlsx' | 'csv' = 'xlsx') => {
+    downloadExcelTemplate('incubator', format);
   };
 
-  // Robust Client-Side CSV Spreadsheet Parser (Support Formulas & Custom Col headers)
-  const parseCSVText = (text: string) => {
+  const downloadSampleCSV = () => downloadSampleTemplate('xlsx');
+
+  // Universal Spreadsheet File Parser (.xlsx, .xls, .csv, .tsv)
+  const parseSpreadsheetData = (arrayBuffer: ArrayBuffer) => {
     try {
-      const lines: string[] = [];
-      let row: string[] = [""];
-      let inQuotes = false;
+      const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true, raw: true });
+      const sheetName = workbook.SheetNames[0];
+      if (!sheetName) throw new Error("Spreadsheet contains no sheets.");
 
-      for (let i = 0; i < text.length; i++) {
-        const char = text[i];
-        const nextChar = text[i + 1];
+      const worksheet = workbook.Sheets[sheetName];
+      const rawRows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: true });
 
-        if (char === '"') {
-          if (inQuotes && nextChar === '"') {
-            row[row.length - 1] += '"';
-            i++; 
-          } else {
-            inQuotes = !inQuotes;
-          }
-        } else if (char === ',' && !inQuotes) {
-          row.push('');
-        } else if ((char === '\r' || char === '\n') && !inQuotes) {
-          if (char === '\r' && nextChar === '\n') {
-            i++;
-          }
-          lines.push(JSON.stringify(row));
-          row = [''];
-        } else {
-          row[row.length - 1] += char;
+      if (rawRows.length < 2) {
+        throw new Error("Spreadsheet is empty or contains no data rows.");
+      }
+
+      // Find header row (search first 5 rows for column names)
+      let headerIdx = 0;
+      for (let i = 0; i < Math.min(5, rawRows.length); i++) {
+        const rowStr = rawRows[i].map((c: any) => String(c).toLowerCase()).join(' ');
+        if (rowStr.includes('name') || rowStr.includes('client') || rowStr.includes('eggs') || rowStr.includes('mark') || rowStr.includes('nom') || rowStr.includes('oeufs')) {
+          headerIdx = i;
+          break;
         }
       }
-      if (row.length > 1 || row[0] !== '') {
-        lines.push(JSON.stringify(row));
-      }
+
+      const headers = rawRows[headerIdx].map((h: any) => String(h || '').trim().toLowerCase());
+
+      // Look up column indexes using flexible and precise keyword matching
+      const idxMark = headers.findIndex((h: string) => h.includes('mark') || h.includes('initial') || h.includes('marquage') || h.includes('code'));
+      const idxName = headers.findIndex((h: string) => h.includes('name') || h.includes('nom') || h.includes('client name') || (h.includes('client') && !h.includes('mark')));
+      const idxDate = headers.findIndex((h: string) => h.includes('date') || h.includes('day 1') || h.includes('brought') || h.includes('livraison'));
       
-      const parsed = lines.map(line => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      }).filter(Boolean);
+      const idxEggType = headers.findIndex((h: string) => 
+        (h.includes('egg') && h.includes('type')) || h.includes('species') || h.includes('volaille') || h.includes('type of egg') || (h.includes('type') && !h.includes('case'))
+      );
 
-      if (parsed.length <= 1) {
-        throw new Error("Spreadsheet contains no data rows or is empty.");
+      const idxEggs = headers.findIndex((h: string) => {
+        const isTypeCol = h.includes('type') || h.includes('species') || h.includes('volaille') || h.includes('case') || h.includes('special') || h.includes('tariff') || h.includes('rate') || h.includes('price');
+        if (isTypeCol) return false;
+        return h.includes('number of egg') || h.includes('nber of egg') || h.includes('no of egg') || h.includes('eggs collected') || h.includes('eggs brought') || h.includes('egg count') || h.includes('eggs count') || h.includes('total egg') || h.includes('number of eggs') || h.includes('qty') || h.includes('quantity') || h.includes('quantite') || h.includes('count') || h.includes('eggs') || h.includes('oeuf') || h.includes('oeufs');
+      });
+
+      const idxCase = headers.findIndex((h: string) => h.includes('case') || h.includes('special') || h.includes('tariff') || h.includes('tarification') || h.includes('prix') || h.includes('pricing'));
+      const idxPaid = headers.findIndex((h: string) => h.includes('paid') || h.includes('paye') || h.includes('verse') || h.includes('montant') || h.includes('amount paid') || h.includes('payment'));
+      const idxScan = headers.findIndex((h: string) => h.includes('scan') || h.includes('candling') || h.includes('mirage') || h.includes('post-scan') || h.includes('day 8') || h.includes('day 10'));
+      const idxHatch = headers.findIndex((h: string) => h.includes('hatch') || h.includes('chick') || h.includes('poussin') || h.includes('eclosion'));
+      const idxPhone = headers.findIndex((h: string) => h.includes('phone') || h.includes('contact') || h.includes('tel') || h.includes('whatsapp'));
+      const idxLoc = headers.findIndex((h: string) => h.includes('loc') || h.includes('city') || h.includes('adresse') || h.includes('quartier'));
+      const idxNotes = headers.findIndex((h: string) => h.includes('note') || h.includes('comment') || h.includes('remarque'));
+
+      if (idxName === -1 && idxMark === -1) {
+        throw new Error("Could not detect 'Client Name' or 'Client Mark' header column in the spreadsheet.");
       }
 
-      const headers = parsed[0].map((h: string) => h.trim().toLowerCase());
-      
-      // Look up column indexes matching the user's customized sheet columns
-      const idxMark = headers.findIndex((h: string) => h.includes('client mark') || (h.includes('mark') && !h.includes('client name')) || h.includes('initial') || h.includes('marquage'));
-      const idxName = headers.findIndex((h: string) => h.includes('name') || h.includes('nom') || h.includes('client'));
-      const idxDate = headers.findIndex((h: string) => h.includes('date') || h.includes('day 1') || h.includes('brought'));
-      const idxEggs = headers.findIndex((h: string) => h.includes('eggs') || h.includes('oeufs') || h.includes('quantity') || h.includes('quantite'));
-      const idxCase = headers.findIndex((h: string) => h.includes('case') || h.includes('special') || h.includes('tariff') || h.includes('type'));
-      const idxPaid = headers.findIndex((h: string) => h.includes('paid') || h.includes('paye') || h.includes('verse'));
-      const idxScan = headers.findIndex((h: string) => h.includes('scan') || h.includes('day 8') || h.includes('mirage') || h.includes('candling'));
-      const idxHatch = headers.findIndex((h: string) => h.includes('hatched') || h.includes('chicks') || h.includes('eclosion'));
-      const idxPhone = headers.findIndex((h: string) => h.includes('phone') || h.includes('contact') || h.includes('tel') || h.includes('phone number') || h.includes('clients contact'));
-      const idxLoc = headers.findIndex((h: string) => h.includes('loc') || h.includes('quartier') || h.includes('adresse'));
+      const rowsData = rawRows.slice(headerIdx + 1).map((cols: any[], rIdx: number) => {
+        if (!cols || cols.length === 0 || cols.every(c => String(c).trim() === '')) return null;
 
-      if (idxName === -1) {
-        throw new Error("Could not detect Client Name column in the spreadsheet header columns.");
-      }
+        let rawName = idxName !== -1 && cols[idxName] ? String(cols[idxName]).trim() : "";
+        let rawMark = idxMark !== -1 ? String(cols[idxMark] || '').trim().toUpperCase() : "";
 
-      const rowsData = parsed.slice(1).map((cols: string[], rIdx: number) => {
-        if (!cols || cols.length === 0 || cols.every(c => !c.trim())) return null;
+        if (!rawName && !rawMark) return null; // Skip empty row
 
-        let clientName = idxName !== -1 && cols[idxName] ? cols[idxName].trim() : "";
-        if (!clientName) return null; // skip completely empty client cells
-
-        const itemMarkRaw = idxMark !== -1 && idxMark !== idxName && cols[idxMark] ? cols[idxMark].trim().toUpperCase() : "";
-        
-        // Extract 2-letter uppercase client mark from parenthesized string (e.g., "John Doe (JD)" -> "JD")
-        let clientMark = itemMarkRaw;
-        const parenMatch = clientName.match(/\(([^)]+)\)/);
+        // Extract client mark if parenthesized in name, e.g., "John Doe (JD)"
+        let clientMark = rawMark;
+        const parenMatch = rawName.match(/\(([^)]+)\)/);
         if (parenMatch && parenMatch[1].trim().length === 2) {
           clientMark = parenMatch[1].trim().toUpperCase();
         }
 
-        if (!clientMark && clientName) {
-          // Fallback to initials parsing
-          const cleanName = clientName.replace(/\([^)]*\)/g, '').trim();
+        if (!clientMark && rawName) {
+          const cleanName = rawName.replace(/\([^)]*\)/g, '').trim();
           const parts = cleanName.split(/\s+/);
           if (parts.length >= 2 && parts[0] && parts[1]) {
             clientMark = (parts[0][0] + parts[1][0]).toUpperCase().replace(/[^A-Z]/g, '');
@@ -748,68 +1673,106 @@ export default function IncubatorMod({
           }
         }
 
-        // Limit mark length to 2
+        // Limit mark length to 2 uppercase letters
         clientMark = clientMark.substring(0, 2).toUpperCase();
+        if (clientMark.length < 2) {
+          clientMark = (clientMark + 'X').substring(0, 2);
+        }
 
-        // Clean parenthesized mark from the clientName so it reads clean e.g. "John Doe"
-        let displayClientName = clientName;
-        if (clientName.includes('(')) {
-          displayClientName = clientName.replace(/\([^)]*\)/g, '').trim();
+        let displayClientName = rawName;
+        if (rawName.includes('(')) {
+          displayClientName = rawName.replace(/\([^)]*\)/g, '').trim();
         }
         if (!displayClientName) {
           displayClientName = `Client ${clientMark}`;
         }
 
         // Date brought parsing
-        let dateBrought = idxDate !== -1 && cols[idxDate] ? cols[idxDate].trim() : "";
-        if (!dateBrought) {
-          dateBrought = new Date().toISOString().split('T')[0];
-        }
+        let rawDate = idxDate !== -1 && cols[idxDate] !== undefined && cols[idxDate] !== null ? cols[idxDate] : "";
+        let dateBrought = parseExcelDate(rawDate);
 
-        // Convert common / or . to -
-        dateBrought = dateBrought.replace(/[\/\.]/g, '-');
-        if (dateBrought.includes('-')) {
-          const parts = dateBrought.split('-');
-          if (parts[0].length === 2 && parts[2].length === 4) { // DD-MM-YYYY format
-            dateBrought = `${parts[2]}-${parts[1]}-${parts[0]}`;
+        // Egg Type parsing
+        const rawEggType = idxEggType !== -1 && cols[idxEggType] ? String(cols[idxEggType]).trim().toLowerCase() : "";
+        let eggType: 'Brahma' | 'Turkey' | 'Quail' | 'Goose' = 'Brahma';
+        if (rawEggType.includes('turkey') || rawEggType.includes('dinde')) eggType = 'Turkey';
+        else if (rawEggType.includes('quail') || rawEggType.includes('caille')) eggType = 'Quail';
+        else if (rawEggType.includes('goose') || rawEggType.includes('oie')) eggType = 'Goose';
+
+        // Eggs count
+        let parsedEggs = "";
+        if (idxEggs !== -1 && cols[idxEggs] !== undefined && cols[idxEggs] !== null) {
+          parsedEggs = String(cols[idxEggs]).replace(/[^0-9]/g, '');
+        }
+        // Fallback: search columns for numeric value if idxEggs didn't match or returned empty
+        if (!parsedEggs) {
+          for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+            if (colIdx !== idxMark && colIdx !== idxName && colIdx !== idxDate && colIdx !== idxEggType && colIdx !== idxCase && colIdx !== idxPaid && colIdx !== idxPhone && colIdx !== idxLoc) {
+              const val = cols[colIdx];
+              if (val !== undefined && val !== null && val !== "") {
+                const cleaned = String(val).replace(/[^0-9]/g, '');
+                if (cleaned.length > 0) {
+                  parsedEggs = cleaned;
+                  break;
+                }
+              }
+            }
           }
         }
+        const eggsCollected = Number(parsedEggs) || 0;
 
-        const eggsCollected = idxEggs !== -1 && cols[idxEggs] ? Number(cols[idxEggs]) || 0 : 0;
-        const specialCaseStr = idxCase !== -1 && cols[idxCase] ? cols[idxCase].trim() : "Standard";
+        // Tariff / Special Case
+        const rawCase = idxCase !== -1 && cols[idxCase] ? String(cols[idxCase]).trim().toLowerCase() : "standard";
         let specialCase: SpecialCase = "Standard";
-        if (specialCaseStr.toLowerCase().includes("discount") || specialCaseStr.toLowerCase().includes("reduc")) specialCase = "Discount";
-        else if (specialCaseStr.toLowerCase().includes("free") || specialCaseStr.toLowerCase().includes("gratuit")) specialCase = "Free";
-        else if (specialCaseStr.toLowerCase().includes("custom") || specialCaseStr.toLowerCase().includes("perso")) specialCase = "Custom";
+        if (rawCase.includes("150") || rawCase.includes("brought")) specialCase = "150 Per Egg Brought";
+        else if (rawCase.includes("chick") || rawCase.includes("poussin")) specialCase = "Per Chick";
+        else if (rawCase.includes("after scan") || rawCase.includes("post scan") || rawCase.includes("mirage")) specialCase = "Per Egg After Scan";
+        else if (rawCase.includes("discount") || rawCase.includes("reduc")) specialCase = "Discount";
+        else if (rawCase.includes("free") || rawCase.includes("gratuit")) specialCase = "Free";
+        else if (rawCase.includes("custom") || rawCase.includes("perso")) specialCase = "Custom";
 
-        const amountPaid = idxPaid !== -1 && cols[idxPaid] ? Number(cols[idxPaid]) || 0 : 0;
-        const eggsAfterScan = idxScan !== -1 && cols[idxScan] ? Number(cols[idxScan]) : null;
-        const chicksHatched = idxHatch !== -1 && cols[idxHatch] ? Number(cols[idxHatch]) : null;
-        const clientPhone = idxPhone !== -1 && cols[idxPhone] ? cols[idxPhone].trim() : "237650000000";
-        const clientLocation = "Bafoussam"; // default location
+        // Financials & Counts
+        const rawPaid = idxPaid !== -1 && cols[idxPaid] ? String(cols[idxPaid]).replace(/[^0-9\.]/g, '') : "0";
+        const amountPaid = Number(rawPaid) || 0;
+
+        const rawScan = idxScan !== -1 && cols[idxScan] !== undefined && cols[idxScan] !== "" ? String(cols[idxScan]).replace(/[^0-9]/g, '') : "";
+        const eggsAfterScan = rawScan !== "" ? Number(rawScan) : null;
+
+        const rawHatch = idxHatch !== -1 && cols[idxHatch] !== undefined && cols[idxHatch] !== "" ? String(cols[idxHatch]).replace(/[^0-9]/g, '') : "";
+        const chicksHatched = rawHatch !== "" ? Number(rawHatch) : null;
+
+        const clientPhone = idxPhone !== -1 && cols[idxPhone] ? String(cols[idxPhone]).trim() : "237650000000";
+        const clientLocation = idxLoc !== -1 && cols[idxLoc] ? String(cols[idxLoc]).trim() : "";
+        const notes = idxNotes !== -1 && cols[idxNotes] ? String(cols[idxNotes]).trim() : "Imported from spreadsheet backup";
 
         return {
-          rowNumber: rIdx + 2,
+          rowNumber: headerIdx + rIdx + 2,
           clientMark,
           clientName: displayClientName,
+          eggType,
           dateBrought,
           eggsCollected,
+          numberOfEggs: eggsCollected,
           specialCase,
           amountPaid,
           eggsAfterScan,
           chicksHatched,
           clientPhone,
-          clientLocation
+          clientLocation,
+          notes
         };
       }).filter(Boolean).filter((r: any) => r.clientMark.length === 2);
 
+      if (rowsData.length === 0) {
+        throw new Error("No valid data rows with client information were found in the spreadsheet.");
+      }
+
       return rowsData;
     } catch (e: any) {
-      throw new Error(`Error parsing spreadsheet rows: ${e.message}`);
+      throw new Error(`Error parsing spreadsheet: ${e.message}`);
     }
   };
 
-  const handleCSVFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCSVFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     setErrorMsg('');
     setImportNotice('');
@@ -817,19 +1780,15 @@ export default function IncubatorMod({
     if (!file) return;
 
     setCsvFile(file);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const parsed = parseCSVText(text);
-        setParsedRows(parsed);
-        setImportNotice(`Loaded spreadsheet successfully. Detected ${parsed.length} valid historic incubator rows.`);
-      } catch (err: any) {
-        setErrorMsg(err.message || 'Error occurred reading the CSV file.');
-        setParsedRows([]);
-      }
-    };
-    reader.readAsText(file);
+    try {
+      const buffer = await file.arrayBuffer();
+      const parsed = parseSpreadsheetData(buffer);
+      setParsedRows(parsed);
+      setImportNotice(`Loaded "${file.name}" successfully! Detected ${parsed.length} valid historic incubator batch rows ready for import.`);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error occurred reading the spreadsheet file.');
+      setParsedRows([]);
+    }
   };
 
   const handleImportSubmit = async () => {
@@ -871,7 +1830,11 @@ export default function IncubatorMod({
 
   // Sorting & Filtering Process
   const getSortedRecords = () => {
-    const filtered = data.incubator_records.filter(rec => {
+    if (!data.incubator_records) return [];
+
+    const indexed = data.incubator_records.map((rec, origIdx) => ({ rec, origIdx }));
+
+    const filtered = indexed.filter(({ rec }) => {
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch = !q || (
         rec.clientName.toLowerCase().includes(q) ||
@@ -880,7 +1843,7 @@ export default function IncubatorMod({
       );
       if (!matchesSearch) return false;
 
-      const isHatched = rec.chicksHatched !== null && rec.chicksHatched !== undefined;
+      const isHatched = isRecordHatched(rec);
       if (batchStatusFilter === 'active') return !isHatched;
       if (batchStatusFilter === 'hatched') return isHatched;
       return true;
@@ -888,13 +1851,34 @@ export default function IncubatorMod({
 
     const todayTime = new Date(new Date().toISOString().split('T')[0]).getTime();
 
-    return [...filtered].sort((a, b) => {
-      if (activeSort === 'oldest_brought') {
-        return new Date(a.dateBrought).getTime() - new Date(b.dateBrought).getTime();
-      }
+    const sortedItems = [...filtered].sort((itemA, itemB) => {
+      const a = itemA.rec;
+      const b = itemB.rec;
+
       if (activeSort === 'newest_brought') {
-        return new Date(b.dateBrought).getTime() - new Date(a.dateBrought).getTime();
+        const dateDiff = new Date(b.dateBrought).getTime() - new Date(a.dateBrought).getTime();
+        if (dateDiff !== 0) return dateDiff;
+
+        // Same day entry: sort newest created time first or higher insertion order (no alphabetical priority)
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeA && timeB && timeA !== timeB) return timeB - timeA;
+
+        return itemB.origIdx - itemA.origIdx;
       }
+
+      if (activeSort === 'oldest_brought') {
+        const dateDiff = new Date(a.dateBrought).getTime() - new Date(b.dateBrought).getTime();
+        if (dateDiff !== 0) return dateDiff;
+
+        // Same day entry: sort oldest created time first or lower insertion order
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (timeA && timeB && timeA !== timeB) return timeA - timeB;
+
+        return itemA.origIdx - itemB.origIdx;
+      }
+
       if (activeSort === 'client_name_az') {
         return a.clientName.localeCompare(b.clientName);
       }
@@ -914,14 +1898,14 @@ export default function IncubatorMod({
         const speciesA = a.eggType || 'Brahma';
         const transDayA = speciesA === 'Turkey' ? 25 : speciesA === 'Quail' ? 15 : speciesA === 'Goose' ? 26 : 18;
         const hatchDayA = speciesA === 'Turkey' ? 28 : speciesA === 'Quail' ? 18 : speciesA === 'Goose' ? 30 : 21;
-        const isTransitA = daysA >= transDayA && daysA < hatchDayA && (a.chicksHatched === null || a.chicksHatched === undefined);
+        const isTransitA = daysA >= transDayA && daysA < hatchDayA && !isRecordHatched(a);
 
         const broughtTimeB = new Date(b.dateBrought).getTime();
         const daysB = Math.floor((todayTime - broughtTimeB) / (24 * 60 * 60 * 1000));
         const speciesB = b.eggType || 'Brahma';
         const transDayB = speciesB === 'Turkey' ? 25 : speciesB === 'Quail' ? 15 : speciesB === 'Goose' ? 26 : 18;
         const hatchDayB = speciesB === 'Turkey' ? 28 : speciesB === 'Quail' ? 18 : speciesB === 'Goose' ? 30 : 21;
-        const isTransitB = daysB >= transDayB && daysB < hatchDayB && (b.chicksHatched === null || b.chicksHatched === undefined);
+        const isTransitB = daysB >= transDayB && daysB < hatchDayB && !isRecordHatched(b);
 
         if (isTransitA && !isTransitB) return -1;
         if (!isTransitA && isTransitB) return 1;
@@ -949,13 +1933,13 @@ export default function IncubatorMod({
         const daysA = Math.floor((todayTime - broughtTimeA) / (24 * 60 * 60 * 1000));
         const speciesA = a.eggType || 'Brahma';
         const hatchDayA = speciesA === 'Turkey' ? 28 : speciesA === 'Quail' ? 18 : speciesA === 'Goose' ? 30 : 21;
-        const isHatchedA = daysA >= hatchDayA && (a.chicksHatched === null || a.chicksHatched === undefined);
+        const isHatchedA = daysA >= hatchDayA && !isRecordHatched(a);
 
         const broughtTimeB = new Date(b.dateBrought).getTime();
         const daysB = Math.floor((todayTime - broughtTimeB) / (24 * 60 * 60 * 1000));
         const speciesB = b.eggType || 'Brahma';
         const hatchDayB = speciesB === 'Turkey' ? 28 : speciesB === 'Quail' ? 18 : speciesB === 'Goose' ? 30 : 21;
-        const isHatchedB = daysB >= hatchDayB && (b.chicksHatched === null || b.chicksHatched === undefined);
+        const isHatchedB = daysB >= hatchDayB && !isRecordHatched(b);
 
         if (isHatchedA && !isHatchedB) return -1;
         if (!isHatchedA && isHatchedB) return 1;
@@ -963,15 +1947,21 @@ export default function IncubatorMod({
       }
       return 0;
     });
+
+    return sortedItems.map(item => item.rec);
   };
 
   // Checkbox selection states
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [bulkEditLoading, setBulkEditLoading] = useState(false);
 
-  const handleBulkDeleteRecords = async () => {
+  const handleBulkDeleteRecords = () => {
     if (selectedRecordIds.length === 0) return;
-    if (!window.confirm(`Are you sure you want to permanently delete these ${selectedRecordIds.length} selected batches? All associated scan or hatch entries will be lost.`)) return;
+    setShowBulkDeleteConfirm(true);
+  };
+
+  const confirmBulkDeleteRecords = async () => {
+    if (selectedRecordIds.length === 0) return;
     
     setBulkEditLoading(true);
     setErrorMsg('');
@@ -985,15 +1975,23 @@ export default function IncubatorMod({
         },
         body: JSON.stringify({ type: 'incubator', ids: selectedRecordIds })
       });
-      const resData = await res.json();
-      if (res.ok) {
+      const resData = await res.json().catch(() => ({}));
+      if (res.ok && resData.success !== false) {
+        const deletedCount = resData.count || selectedRecordIds.length;
+        console.log(`[BULK DELETION SUCCESS CHECK] ${deletedCount} incubator batch(es) successfully removed from server database.`);
         setSelectedRecordIds([]);
-        setSuccessMsg(`Successfully deleted ${resData.count || selectedRecordIds.length} batches.`);
-        triggerRefresh();
+        setShowBulkDeleteConfirm(false);
+        setSuccessMsg(`✓ Deletion Success: ${deletedCount} incubator batch(es) successfully removed from server.`);
+        if (triggerRefresh) {
+          triggerRefresh();
+        }
       } else {
-        throw new Error(resData.error || 'Failed to bulk delete records.');
+        const errMsg = resData.error || 'Failed to bulk delete records.';
+        console.error('[BULK DELETION ERROR]:', errMsg);
+        throw new Error(errMsg);
       }
     } catch (e: any) {
+      console.error('[BULK DELETION EXCEPTION]:', e);
       setErrorMsg(e.message || 'Error executing bulk delete.');
     } finally {
       setBulkEditLoading(false);
@@ -1031,8 +2029,8 @@ export default function IncubatorMod({
 
   const { rate: liveRate, due: liveDue } = getLiveRateAndDue();
   const sortedRecords = getSortedRecords();
-  const activeBatchesCount = (data.incubator_records || []).filter(r => r.chicksHatched === null || r.chicksHatched === undefined).length;
-  const hatchedBatchesCount = (data.incubator_records || []).filter(r => r.chicksHatched !== null && r.chicksHatched !== undefined).length;
+  const activeBatchesCount = (data.incubator_records || []).filter(r => !isRecordHatched(r)).length;
+  const hatchedBatchesCount = (data.incubator_records || []).filter(r => isRecordHatched(r)).length;
   const totalBatchesCount = (data.incubator_records || []).length;
   const largeInputClass = "w-full h-12 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-800 transition-colors bg-white";
 
@@ -1040,33 +2038,42 @@ export default function IncubatorMod({
     <div id="incubator_tab" className="space-y-6 pb-28">
       
       {/* Sub Tabs Toggle (Records vs Clients vs Import) */}
-      <div className="flex bg-slate-100 p-1 rounded-2xl space-x-1">
+      <div className="flex bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/60 shadow-inner space-x-1.5">
         <button
           id="tab_sub_records"
           onClick={() => { setActiveTabSub('records'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 text-center rounded-xl font-extrabold text-[11px] uppercase transition-all cursor-pointer ${
-            activeTabSub === 'records' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+            activeTabSub === 'records'
+              ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          🥚 Egg Batches
+          <Egg size={16} className={activeTabSub === 'records' ? 'text-emerald-600' : 'text-slate-400'} />
+          <span>Egg Batches & Calendar</span>
         </button>
         <button
           id="tab_sub_clients"
           onClick={() => { setActiveTabSub('clients'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 text-center rounded-xl font-extrabold text-[11px] uppercase transition-all cursor-pointer ${
-            activeTabSub === 'clients' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+            activeTabSub === 'clients'
+              ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          👤 Clients
+          <User size={16} className={activeTabSub === 'clients' ? 'text-emerald-600' : 'text-slate-400'} />
+          <span>Client Directory ({data.clients.length})</span>
         </button>
         <button
           id="tab_sub_import"
           onClick={() => { setActiveTabSub('import'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 text-center rounded-xl font-extrabold text-[11px] uppercase transition-all cursor-pointer ${
-            activeTabSub === 'import' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+            activeTabSub === 'import'
+              ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          📥 Import Excel
+          <FileText size={16} className={activeTabSub === 'import' ? 'text-emerald-600' : 'text-slate-400'} />
+          <span>Import Excel</span>
         </button>
       </div>
 
@@ -1111,6 +2118,18 @@ export default function IncubatorMod({
             {/* Collapsible Client Register Form */}
             {showClientForm && (
               <form onSubmit={handleAddClient} className="bg-slate-50/50 p-4 border border-slate-100 rounded-2xl space-y-4 mb-6">
+                <DraftSavedBadge
+                  hasRestoredDraft={hasClientDraft}
+                  onDiscard={() => {
+                    clearClientDraft();
+                    setClientName('');
+                    setClientMark('');
+                    setClientPhone('');
+                    setClientLoc('');
+                    setClientOverdraftVal('');
+                    setClientSpecialCase('Standard');
+                  }}
+                />
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Client Full Name</label>
                   <input
@@ -1127,20 +2146,20 @@ export default function IncubatorMod({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
-                      Client Mark (2 Letters)
+                      Client Mark (Unique Code)
                     </label>
                     <input
                       id="client_mark_input"
                       type="text"
                       placeholder="e.g. SS"
-                      maxLength={2}
+                      maxLength={10}
                       value={clientMark}
-                      onChange={(e) => setClientMark(e.target.value.toUpperCase().replace(/[^A-Z]/gi, ''))}
+                      onChange={(e) => setClientMark(e.target.value.toUpperCase().replace(/[^A-Z0-9]/gi, ''))}
                       className="w-full h-12 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-extrabold text-lg text-emerald-800 tracking-wider transition-colors text-center"
                       required
                     />
                     <span className="text-[10px] text-slate-400 block mt-1 leading-tight px-1 font-semibold">
-                      Must be strictly unique. Type-over suggestion allowed.
+                      Must be strictly unique. Select an available mark badge below.
                     </span>
                   </div>
 
@@ -1157,17 +2176,71 @@ export default function IncubatorMod({
                     />
                   </div>
                 </div>
+
+                {/* Available Unused Mark Badges for New Client */}
+                {(() => {
+                  const currentMark = (clientMark || '').trim().toUpperCase();
+                  const usedMarksSet = new Set(
+                    (data.clients || [])
+                      .map((c: any) => (c.mark || '').trim().toUpperCase())
+                      .filter(Boolean)
+                  );
+                  const isConflict = currentMark !== '' && usedMarksSet.has(currentMark);
+                  const dupeClientObj = isConflict
+                    ? data.clients?.find((c: any) => (c.mark || '').trim().toUpperCase() === currentMark)
+                    : null;
+
+                  const suggestedUnused = getSuggestedUnusedMarks(
+                    clientName || '',
+                    currentMark,
+                    data.clients || [],
+                    8
+                  );
+
+                  return (
+                    <div className="space-y-1.5 bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+                      <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] font-bold">
+                        <span className="flex items-center gap-1.5 text-slate-700">
+                          <Sparkles size={13} className="text-amber-500 shrink-0" />
+                          <span>Available Unused Marks (Click to assign):</span>
+                        </span>
+                        {isConflict && (
+                          <span className="text-rose-600 font-extrabold flex items-center gap-1 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                            <AlertCircle size={12} className="shrink-0" />
+                            Taken by {dupeClientObj?.name || 'another client'}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {suggestedUnused.map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setClientMark(m)}
+                            className={`px-2.5 py-1 rounded-xl text-xs font-black tracking-wider uppercase transition-all cursor-pointer border ${
+                              currentMark === m
+                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                : 'bg-slate-50 hover:bg-emerald-50 text-emerald-800 border-emerald-200 hover:border-emerald-300'
+                            }`}
+                          >
+                            +{m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Location / Village</label>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Location / Village (Optional)</label>
                     <input
                       id="client_loc_input"
                       type="text"
-                      placeholder="e.g. Bafoussam III"
+                      placeholder="e.g. Bafoussam III (Optional)"
                       value={clientLoc}
                       onChange={(e) => setClientLoc(e.target.value)}
                       className={largeInputClass}
-                      required
                     />
                   </div>
                   <div>
@@ -1192,10 +2265,10 @@ export default function IncubatorMod({
                     onChange={(e) => setClientSpecialCase(e.target.value as SpecialCase)}
                     className="w-full h-12 px-4 rounded-xl border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-extrabold text-slate-800 text-xs bg-white cursor-pointer"
                   >
-                    <option value="Standard">Standard (200 FCFA / egg brought)</option>
+                    <option value="Standard">Standard Species Rate (Quail 100 FCFA, Turkey/Duck/Goose 500 FCFA, Brahma/Others 200 FCFA)</option>
                     <option value="150 Per Egg Brought">150 FCFA Per Egg Brought</option>
-                    <option value="Per Chick">Per Chick Hatched (200 FCFA / chick)</option>
-                    <option value="Per Egg After Scan">Per Egg After Scan (200 FCFA / scanned egg)</option>
+                    <option value="Per Chick">Per Chick Hatched (Standard Rate)</option>
+                    <option value="Per Egg After Scan">Per Egg After Scan (Standard Rate)</option>
                     <option value="Free">Free (0 FCFA)</option>
                     <option value="Custom">Custom Rate</option>
                   </select>
@@ -1226,49 +2299,49 @@ export default function IncubatorMod({
                   icon: <User size={20} />,
                   content: (
                     <div className="overflow-x-auto select-none rounded-2xl border border-slate-100 bg-white">
-                      <table className="w-full border-collapse text-left min-w-[500px]">
-                        <thead className="bg-slate-50 sticky top-0 text-xs font-bold text-slate-500 uppercase tracking-wider z-10">
+                      <table className="w-full border-collapse text-left min-w-[340px] sm:min-w-[500px]">
+                        <thead className="bg-slate-50 sticky top-0 text-[9px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider z-10">
                           <tr>
-                            <th className="p-3">Mark</th>
-                            <th className="p-3">Client Name</th>
-                            <th className="p-3">Special Case</th>
-                            <th className="p-3">Phone (WhatsApp)</th>
-                            <th className="p-3">Location</th>
-                            <th className="p-3">Financial Status</th>
-                            <th className="p-3 text-center">Compilation Ledger</th>
+                            <th className="p-1.5 sm:p-3">Mark</th>
+                            <th className="p-1.5 sm:p-3">Client Name</th>
+                            <th className="p-1.5 sm:p-3">Special Case</th>
+                            <th className="p-1.5 sm:p-3">Phone (WhatsApp)</th>
+                            <th className="p-1.5 sm:p-3">Location</th>
+                            <th className="p-1.5 sm:p-3">Financial Status</th>
+                            <th className="p-1.5 sm:p-3">Overdraft Credit</th>
+                            <th className="p-1.5 sm:p-3 text-center">Compilation Ledger</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-sm">
+                        <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-[11px] sm:text-sm">
                           {data.clients.length === 0 ? (
                             <tr>
-                              <td colSpan={7} className="p-4 text-center text-slate-400 font-semibold bg-slate-50/50">
+                              <td colSpan={8} className="p-3 sm:p-4 text-center text-slate-400 font-semibold bg-slate-50/50">
                                 No clients registered yet.
                               </td>
                             </tr>
                           ) : (
                             data.clients.map((c) => {
                               const clientRecords = (data.incubator_records || []).filter(r => r.clientId === c.id);
-                              const totalOwed = clientRecords.reduce((acc, r) => acc + Math.max(0, r.amountDue - r.amountPaid - (r.overdraftUsed || 0)), 0);
-                              const totalOverdraft = c.overdraft || 0;
+                              const totalDue = clientRecords.reduce((acc, r) => acc + (r.amountDue || 0), 0);
+                              const totalPaid = clientRecords.reduce((acc, r) => acc + (r.amountPaid || 0), 0);
+                              const totalOverdraftUsed = clientRecords.reduce((acc, r) => acc + (r.overdraftUsed || 0), 0);
+                              const netDue = Math.max(0, totalDue - totalOverdraftUsed);
+
+                              const netBalance = totalPaid - netDue;
+                              const totalOwed = netBalance < 0 ? Math.abs(netBalance) : 0;
+                              const totalOverdraft = netBalance > 0 ? netBalance : 0;
                               return (
                                 <tr key={c.id} className="hover:bg-slate-50/40">
-                                  <td className="p-3 font-extrabold text-emerald-800 text-base">{c.mark}</td>
-                                  <td className="p-3 text-slate-950 font-bold">{c.name}</td>
-                                  <td className="p-3 text-xs">
+                                  <td className="p-1.5 sm:p-3 font-extrabold text-emerald-800 text-xs sm:text-base">{c.mark}</td>
+                                  <td className="p-1.5 sm:p-3 text-slate-950 font-bold text-xs sm:text-sm">{c.name}</td>
+                                  <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs">
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        setEditingClient(c);
-                                        setEditClientName(c.name || '');
-                                        setEditClientPhone(c.phone || '');
-                                        setEditClientLoc(c.location || '');
-                                        setEditClientOverdraft(String(c.overdraft || 0));
-                                        setEditClientSpecialCase((c.specialCase as SpecialCase) || 'Standard');
-                                        setErrorMsg('');
-                                        setSuccessMsg('');
+                                        openEditClientModal(c);
                                         setFullscreenTable(null);
                                       }}
-                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase border transition-all cursor-pointer ${
+                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[9px] sm:text-[10px] font-black uppercase border transition-all cursor-pointer ${
                                         c.specialCase === '150 Per Egg Brought' || c.specialCase === 'Discount' ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100' :
                                         c.specialCase === 'Per Chick' ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100' :
                                         c.specialCase === 'Per Egg After Scan' ? 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100' :
@@ -1282,22 +2355,32 @@ export default function IncubatorMod({
                                       <FileEdit size={10} className="opacity-60" />
                                     </button>
                                   </td>
-                                  <td className="p-3 font-mono text-xs">{c.phone || '-'}</td>
-                                  <td className="p-3 text-xs text-slate-500">{c.location || '-'}</td>
-                                  <td className="p-3 text-xs">
-                                    <div className="flex flex-col gap-1">
-                                      {totalOwed > 0 && <span className="text-rose-700 font-black bg-rose-50 px-2 py-0.5 rounded">Owed: {totalOwed.toLocaleString()} FCFA</span>}
-                                      {totalOverdraft > 0 && <span className="text-blue-700 font-black bg-blue-50 px-2 py-0.5 rounded">Overdraft: {totalOverdraft.toLocaleString()} FCFA</span>}
+                                  <td className="p-1.5 sm:p-3 font-mono text-[10px] sm:text-xs">{c.phone || '-'}</td>
+                                  <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs text-slate-500">{c.location || '-'}</td>
+                                  <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs">
+                                    <div className="flex flex-col gap-0.5 sm:gap-1">
+                                      {totalOwed > 0 && <span className="text-rose-700 font-black bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-md w-fit text-[9px] sm:text-xs">Owed: {totalOwed.toLocaleString()} FCFA</span>}
+                                      {totalOverdraft > 0 && <span className="text-blue-800 font-black bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-md w-fit flex items-center gap-1 text-[9px] sm:text-xs">💳 Overdraft: {totalOverdraft.toLocaleString()} FCFA</span>}
+                                      {totalOwed === 0 && totalOverdraft === 0 && <span className="text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md w-fit text-[9px] sm:text-xs">Settled / Clear</span>}
                                     </div>
                                   </td>
-                                  <td className="p-3 text-center font-bold">
+                                  <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs font-bold">
+                                    {totalOverdraft > 0 ? (
+                                      <span className="text-blue-800 font-extrabold bg-blue-50 border border-blue-200 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[9px] sm:text-xs inline-flex items-center gap-1">
+                                        💳 {totalOverdraft.toLocaleString()} FCFA Credit
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 font-medium">0 FCFA</span>
+                                    )}
+                                  </td>
+                                  <td className="p-1.5 sm:p-3 text-center font-bold">
                                     <button
                                       type="button"
                                       onClick={() => {
                                         setSelectedLedgerClient(c);
                                         setFullscreenTable(null);
                                       }}
-                                      className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700 transition-colors cursor-pointer"
+                                      className="px-2 py-1 sm:px-3 sm:py-1.5 bg-blue-600 text-white rounded-lg text-[10px] sm:text-xs hover:bg-blue-700 transition-colors cursor-pointer"
                                     >
                                       Compile Info
                                     </button>
@@ -1320,22 +2403,23 @@ export default function IncubatorMod({
             </div>
 
             <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-96">
-              <table className="w-full border-collapse text-left min-w-[400px]">
-                <thead className="bg-slate-50 sticky top-0 text-xs font-bold text-slate-500 uppercase tracking-wider">
+              <table className="w-full border-collapse text-left min-w-[340px] sm:min-w-[400px]">
+                <thead className="bg-slate-50 sticky top-0 text-[9px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">
                   <tr>
-                    <th className="p-3">Mark</th>
-                    <th className="p-3">Client Name</th>
-                    <th className="p-3">Special Case</th>
-                    <th className="p-3">Phone (WhatsApp)</th>
-                    <th className="p-3">Location</th>
-                    <th className="p-3">Financial Status</th>
-                    <th className="p-3 text-center">Compilation Ledger</th>
+                    <th className="p-1.5 sm:p-3">Mark</th>
+                    <th className="p-1.5 sm:p-3">Client Name</th>
+                    <th className="p-1.5 sm:p-3">Special Case</th>
+                    <th className="p-1.5 sm:p-3">Phone (WhatsApp)</th>
+                    <th className="p-1.5 sm:p-3">Location</th>
+                    <th className="p-1.5 sm:p-3">Financial Status</th>
+                    <th className="p-1.5 sm:p-3">Overdraft Credit</th>
+                    <th className="p-1.5 sm:p-3 text-center">Compilation Ledger</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-sm">
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-[11px] sm:text-sm">
                   {data.clients.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-4 text-center text-slate-400 font-semibold bg-slate-50/50">
+                      <td colSpan={8} className="p-3 sm:p-4 text-center text-slate-400 font-semibold bg-slate-50/50">
                         No clients registered yet. Define the first family client above.
                       </td>
                     </tr>
@@ -1343,27 +2427,34 @@ export default function IncubatorMod({
                     data.clients.map((c) => {
                       // Calculate consolidated balances
                       const clientRecords = (data.incubator_records || []).filter(r => r.clientId === c.id);
-                      const totalOwed = clientRecords.reduce((acc, r) => acc + Math.max(0, r.amountDue - r.amountPaid - (r.overdraftUsed || 0)), 0);
-                      const totalOverdraft = c.overdraft || 0;
+                      const totalDue = clientRecords.reduce((acc, r) => acc + (r.amountDue || 0), 0);
+                      const totalPaid = clientRecords.reduce((acc, r) => acc + (r.amountPaid || 0), 0);
+                      const totalOverdraftUsed = clientRecords.reduce((acc, r) => acc + (r.overdraftUsed || 0), 0);
+                      const netDue = Math.max(0, totalDue - totalOverdraftUsed);
+
+                      const netBalance = totalPaid - netDue;
+                      const totalOwed = netBalance < 0 ? Math.abs(netBalance) : 0;
+                      const totalOverdraft = netBalance > 0 ? netBalance : 0;
 
                       return (
                         <tr key={c.id} className="hover:bg-slate-50/40">
-                          <td className="p-3 font-extrabold text-emerald-800 text-base">{c.mark}</td>
-                          <td className="p-3 text-slate-950 font-bold">{c.name}</td>
-                          <td className="p-3 text-xs">
+                          <td className="p-1.5 sm:p-3">
                             <button
                               type="button"
-                              onClick={() => {
-                                setEditingClient(c);
-                                setEditClientName(c.name || '');
-                                setEditClientPhone(c.phone || '');
-                                setEditClientLoc(c.location || '');
-                                setEditClientOverdraft(String(c.overdraft || 0));
-                                setEditClientSpecialCase((c.specialCase as SpecialCase) || 'Standard');
-                                setErrorMsg('');
-                                setSuccessMsg('');
-                              }}
-                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase border transition-all cursor-pointer ${
+                              onClick={() => openEditClientModal(c)}
+                              className="font-extrabold text-emerald-800 text-xs sm:text-base hover:underline hover:text-emerald-600 transition-colors cursor-pointer flex items-center gap-1"
+                              title="Click to edit client mark or details"
+                            >
+                              <span>{c.mark}</span>
+                              <FileEdit size={11} className="opacity-60" />
+                            </button>
+                          </td>
+                          <td className="p-1.5 sm:p-3 text-slate-950 font-bold text-xs sm:text-sm">{c.name}</td>
+                          <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs">
+                            <button
+                              type="button"
+                              onClick={() => openEditClientModal(c)}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[9px] sm:text-[10px] font-black uppercase border transition-all cursor-pointer ${
                                 c.specialCase === '150 Per Egg Brought' || c.specialCase === 'Discount' ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100' :
                                 c.specialCase === 'Per Chick' ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100' :
                                 c.specialCase === 'Per Egg After Scan' ? 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100' :
@@ -1377,41 +2468,52 @@ export default function IncubatorMod({
                               <FileEdit size={10} className="opacity-60" />
                             </button>
                           </td>
-                          <td className="p-3">
+                          <td className="p-1.5 sm:p-3">
                             <button
                               id={`wa_client_${c.id}`}
                               onClick={() => openWhatsApp(c.phone, `Hello ${c.name}, this is New Vision Farms. Sharing active incubator status updates.`)}
-                              className="bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl px-2.5 py-1.5 text-xs font-bold flex items-center gap-1 hover:bg-emerald-100 transition-colors cursor-pointer"
+                              className="bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl px-1.5 py-1 sm:px-2.5 sm:py-1.5 text-[10px] sm:text-xs font-bold flex items-center gap-1 hover:bg-emerald-100 transition-colors cursor-pointer"
                             >
-                              <Phone size={13} />
+                              <Phone size={12} />
                               <span>{c.phone}</span>
                             </button>
                           </td>
-                          <td className="p-3 text-xs text-slate-500">
+                          <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs text-slate-500">
                             <div className="flex items-center gap-1">
-                              <MapPin size={12} className="text-slate-400 shrink-0" />
+                              <MapPin size={11} className="text-slate-400 shrink-0" />
                               <span>{c.location}</span>
                             </div>
                           </td>
-                          <td className="p-3 text-xs">
-                            <div className="flex flex-col gap-1">
+                          <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs">
+                            <div className="flex flex-col gap-0.5 sm:gap-1">
                               {totalOwed > 0 && (
-                                <span className="text-rose-700 font-black bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-md w-fit">
+                                <span className="text-rose-700 font-black bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-md w-fit text-[9px] sm:text-xs">
                                   Owed: {totalOwed.toLocaleString()} FCFA
                                 </span>
                               )}
                               {totalOverdraft > 0 && (
-                                <span className="text-blue-700 font-black bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md w-fit">
-                                  Overdraft: {totalOverdraft.toLocaleString()} FCFA
+                                <span className="text-blue-800 font-black bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-md w-fit text-[9px] sm:text-xs">
+                                  💳 Overdraft (We Owe): {totalOverdraft.toLocaleString()} FCFA
                                 </span>
                               )}
                               {totalOwed === 0 && totalOverdraft === 0 && (
-                                <span className="text-slate-400 font-semibold italic">Settled / Clear</span>
+                                <span className="text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md w-fit text-[9px] sm:text-xs">
+                                  Settled / Clear
+                                </span>
                               )}
                             </div>
                           </td>
-                          <td className="p-3 text-center">
-                            <div className="flex items-center justify-center gap-2">
+                          <td className="p-1.5 sm:p-3 text-[10px] sm:text-xs font-bold">
+                            {totalOverdraft > 0 ? (
+                              <span className="text-blue-800 font-extrabold bg-blue-50 border border-blue-200 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[9px] sm:text-xs inline-flex items-center gap-1">
+                                💳 {totalOverdraft.toLocaleString()} FCFA Credit
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-medium">0 FCFA</span>
+                            )}
+                          </td>
+                          <td className="p-1.5 sm:p-3 text-center">
+                            <div className="flex items-center justify-center gap-1 sm:gap-2">
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1419,23 +2521,14 @@ export default function IncubatorMod({
                                   setErrorMsg('');
                                   setSuccessMsg('');
                                 }}
-                                className="px-3 py-1.5 bg-blue-650 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer shadow-xs hover:shadow transition-all inline-flex items-center gap-1"
+                                className="px-2 py-1 sm:px-3 sm:py-1.5 bg-blue-650 hover:bg-blue-700 text-white rounded-xl text-[10px] sm:text-xs font-extrabold uppercase tracking-wide cursor-pointer shadow-xs hover:shadow transition-all inline-flex items-center gap-1"
                               >
-                                <FileText size={12} />
+                                <FileText size={11} />
                                 <span>Compile Info</span>
                               </button>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setEditingClient(c);
-                                  setEditClientName(c.name);
-                                  setEditClientPhone(c.phone);
-                                  setEditClientLoc(c.location);
-                                  setEditClientOverdraft(String(c.overdraft || 0));
-                                  setEditClientSpecialCase((c.specialCase as SpecialCase) || 'Standard');
-                                  setErrorMsg('');
-                                  setSuccessMsg('');
-                                }}
+                                onClick={() => openEditClientModal(c)}
                                 className="px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 rounded-xl text-xs font-extrabold uppercase tracking-wide cursor-pointer shadow-xs hover:shadow transition-all inline-flex items-center gap-1"
                               >
                                 <FileEdit size={12} />
@@ -1479,29 +2572,147 @@ export default function IncubatorMod({
             {/* Collapsible New Batch Record */}
             {showBatchForm && (
               <form onSubmit={handleAddBatch} className="bg-slate-50/50 p-4 border border-slate-100 rounded-2xl space-y-4 mb-6">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Select Client Account</label>
-                  <select
-                    id="batch_client_select"
-                    value={batchClientId}
-                    onChange={(e) => {
-                      const cid = e.target.value;
-                      setBatchClientId(cid);
-                      const foundClient = data.clients.find(c => c.id === cid);
-                      if (foundClient && foundClient.specialCase) {
-                        setBatchSpecialCase(foundClient.specialCase as SpecialCase);
-                      }
-                    }}
-                    className={largeInputClass}
-                    required
-                  >
-                    <option value="">-- Choose Client Profile --</option>
-                    {data.clients.map(c => (
-                      <option key={c.id} value={c.id}>
-                        [{c.mark}] {c.name}
-                      </option>
-                    ))}
-                  </select>
+                <DraftSavedBadge
+                  hasRestoredDraft={hasBatchDraft}
+                  onDiscard={() => {
+                    clearBatchDraft();
+                    setBatchClientId('');
+                    setClientSearchQuery('');
+                    setBatchEggs('');
+                    setBatchSpecialCase('Standard');
+                    setBatchCustomRate('');
+                    setBatchNotes('');
+                    setBatchEggType('Brahma');
+                    setOverdraftOption('none');
+                    setCustomOverdraftAmount('');
+                    setBatchAmountPaid('');
+                  }}
+                />
+                {/* Searchable Client Account Combobox */}
+                <div className="relative" ref={clientDropdownRef}>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">
+                    Select or Type Client Account (Name or Mark)
+                  </label>
+                  <div className="relative flex items-center">
+                    <div className="absolute left-3.5 text-slate-400 pointer-events-none">
+                      <User size={18} />
+                    </div>
+                    <input
+                      id="batch_client_search_input"
+                      type="text"
+                      placeholder="Type client name or mark (e.g. M1 or John)..."
+                      value={clientSearchQuery}
+                      onChange={(e) => handleClientSearchChange(e.target.value)}
+                      onFocus={() => setIsClientDropdownOpen(true)}
+                      className={`${largeInputClass} pl-10 pr-20`}
+                      autoComplete="off"
+                    />
+                    <div className="absolute right-2 flex items-center gap-1">
+                      {clientSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBatchClientId('');
+                            setClientSearchQuery('');
+                            setIsClientDropdownOpen(true);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                          title="Clear selection"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setIsClientDropdownOpen(!isClientDropdownOpen)}
+                        className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                        title="Toggle dropdown list"
+                      >
+                        <ChevronDown size={18} className={`transition-transform duration-200 ${isClientDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Active Selected Client Badge */}
+                  {(() => {
+                    const selClient = data.clients.find(c => c.id === batchClientId);
+                    if (!selClient) return null;
+                    return (
+                      <div className="mt-1.5 ml-1 flex items-center gap-2 text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-lg w-fit shadow-2xs">
+                        <Check size={14} className="text-emerald-600" />
+                        <span>Selected Client: <strong>[{selClient.mark}] {selClient.name}</strong></span>
+                        {selClient.phone && <span className="text-slate-500 text-[11px] font-mono">({selClient.phone})</span>}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Dropdown Options List */}
+                  {isClientDropdownOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-xl z-40 max-h-60 overflow-y-auto divide-y divide-slate-100">
+                      {filteredBatchClients.length > 0 ? (
+                        filteredBatchClients.map((c) => {
+                          const isSelected = c.id === batchClientId;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => handleSelectBatchClient(c)}
+                              className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between hover:bg-emerald-50/70 transition-colors cursor-pointer ${
+                                isSelected ? 'bg-emerald-50 text-emerald-950 font-bold' : 'text-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span className="px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-extrabold text-xs shrink-0">
+                                  {c.mark}
+                                </span>
+                                <div className="truncate">
+                                  <div className="font-bold text-xs text-slate-900 truncate">{c.name}</div>
+                                  <div className="text-[11px] text-slate-500 font-medium truncate">
+                                    {c.phone ? `Phone: ${c.phone}` : 'No phone'} {c.location ? `• ${c.location}` : ''}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0 ml-2">
+                                {c.specialCase && c.specialCase !== 'Standard' && (
+                                  <span className="text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded uppercase">
+                                    {c.specialCase}
+                                  </span>
+                                )}
+                                {isSelected && <Check size={16} className="text-emerald-600 shrink-0" />}
+                              </div>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="p-3.5 text-center text-xs text-slate-500 font-medium italic">
+                          No registered clients found matching "{clientSearchQuery}"
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Prompt Notice when typed client is not registered / not found */}
+                  {clientSearchQuery.trim() !== '' && !batchClientId && filteredBatchClients.length === 0 && (
+                    <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex items-start gap-2 shadow-2xs">
+                      <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div className="leading-snug">
+                        <span>client not found make sure you spelled clients name (MARK) correctly or if its a new client register him/her in the </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTabSub('clients');
+                            setShowClientForm(true);
+                            const clientSection = document.getElementById('client_tab_section') || document.getElementById('client_management_section');
+                            if (clientSection) clientSection.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                          className="underline font-bold text-amber-950 hover:text-amber-700 cursor-pointer"
+                        >
+                          clients tab in the middle
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1514,10 +2725,11 @@ export default function IncubatorMod({
                       className={largeInputClass}
                       required
                     >
-                      <option value="Brahma">🐓 Brahma Eggs</option>
-                      <option value="Turkey">🦃 Turkey Eggs</option>
-                      <option value="Quail">🪶 Quail Eggs</option>
-                      <option value="Goose">🪿 Goose Eggs</option>
+                      <option value="Brahma">🐓 Brahma / Local Eggs (200 FCFA)</option>
+                      <option value="Turkey">🦃 Turkey Eggs (500 FCFA)</option>
+                      <option value="Duck">🦆 Duck Eggs (500 FCFA)</option>
+                      <option value="Quail">🪶 Quail Eggs (100 FCFA)</option>
+                      <option value="Goose">🪿 Goose Eggs (500 FCFA)</option>
                     </select>
                   </div>
 
@@ -1557,10 +2769,10 @@ export default function IncubatorMod({
                       onChange={(e) => setBatchSpecialCase(e.target.value as SpecialCase)}
                       className={largeInputClass}
                     >
-                      <option value="Standard">Standard (200 FCFA / egg brought)</option>
+                      <option value="Standard">Standard ({getStandardRateBySpecies(batchEggType)} FCFA / egg brought)</option>
                       <option value="150 Per Egg Brought">150 FCFA Per Egg Brought</option>
-                      <option value="Per Chick">Per Chick Hatched (200 FCFA / chick)</option>
-                      <option value="Per Egg After Scan">Per Egg After Scan (200 FCFA / scanned egg)</option>
+                      <option value="Per Chick">Per Chick Hatched ({getStandardRateBySpecies(batchEggType)} FCFA / chick)</option>
+                      <option value="Per Egg After Scan">Per Egg After Scan ({getStandardRateBySpecies(batchEggType)} FCFA / scanned egg)</option>
                       <option value="Free">Free (0 FCFA)</option>
                       <option value="Custom">Custom Rate</option>
                     </select>
@@ -1593,49 +2805,96 @@ export default function IncubatorMod({
                   )}
                 </div>
 
-                {/* OVERDRAFT DEDUCTION COMPONENT */}
+                {/* OVERDRAFT DEDUCTION COMPONENT TABLE */}
                 {(() => {
                   const selectedClient = data.clients.find(c => c.id === batchClientId);
                   const clientOverdraft = selectedClient ? (selectedClient.overdraft || 0) : 0;
                   if (clientOverdraft <= 0) return null;
 
+                  let overdraftApplied = 0;
+                  if (overdraftOption === 'full') {
+                    overdraftApplied = Math.min(clientOverdraft, liveDue);
+                  } else if (overdraftOption === 'custom') {
+                    overdraftApplied = Math.min(clientOverdraft, Math.max(0, Number(customOverdraftAmount) || 0), liveDue);
+                  }
+
+                  const remainingCredit = clientOverdraft - overdraftApplied;
+                  const netCashDue = Math.max(0, liveDue - overdraftApplied);
+
                   return (
-                    <div id="batch_overdraft_wrapper" className="bg-amber-50/50 border border-amber-200/60 p-4 rounded-xl space-y-3">
-                      <p className="text-xs font-extrabold text-amber-850 uppercase tracking-wider flex items-center gap-1.5 select-none">
-                        <span>🏷️ Overdraft Available:</span>
-                        <strong className="text-amber-950 bg-amber-200/50 px-2 py-0.5 rounded text-[11px] font-black">
-                          {clientOverdraft.toLocaleString()} FCFA
-                        </strong>
-                      </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-1 select-none">Deduct Overdraft?</label>
-                          <select
-                            id="batch_overdraft_option"
-                            value={overdraftOption}
-                            onChange={(e) => setOverdraftOption(e.target.value as any)}
-                            className={largeInputClass}
-                          >
-                            <option value="none">Do not use (0 FCFA)</option>
-                            <option value="full">Use full ({Math.min(clientOverdraft, liveDue).toLocaleString()} FCFA)</option>
-                            <option value="custom">Use custom amount...</option>
-                          </select>
-                        </div>
-                        {overdraftOption === 'custom' && (
+                    <div id="batch_overdraft_wrapper" className="bg-blue-50/70 border-2 border-blue-200 p-4 rounded-2xl space-y-3 shadow-xs">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl">💳</span>
                           <div>
-                            <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-1 select-none">Custom Overdraft Deduction (FCFA)</label>
-                            <input
-                              id="batch_custom_overdraft_input"
-                              type="number"
-                              placeholder="Amount to deduct..."
-                              value={customOverdraftAmount}
-                              onChange={(e) => setCustomOverdraftAmount(e.target.value)}
-                              max={Math.min(clientOverdraft, liveDue)}
-                              min="0"
-                              className={largeInputClass}
-                            />
+                            <h5 className="text-xs font-black text-blue-900 uppercase tracking-wider">Client Overdraft Credit Account</h5>
+                            <p className="text-[11px] text-blue-700 font-semibold">Amount we owe {selectedClient?.name} from previous overpayments</p>
                           </div>
-                        )}
+                        </div>
+                        <span className="bg-blue-600 text-white text-xs font-black px-3 py-1 rounded-lg shadow-2xs self-start sm:self-auto">
+                          {clientOverdraft.toLocaleString()} FCFA Credit Available
+                        </span>
+                      </div>
+
+                      <div className="overflow-x-auto rounded-xl border border-blue-200 bg-white shadow-2xs">
+                        <table className="w-full text-xs text-left border-collapse min-w-[500px]">
+                          <thead className="bg-blue-100/80 font-extrabold text-blue-900 uppercase text-[10px]">
+                            <tr>
+                              <th className="p-2.5">Client Credit</th>
+                              <th className="p-2.5">Batch Bill</th>
+                              <th className="p-2.5 min-w-[150px]">Overdraft to Use Now</th>
+                              <th className="p-2.5">Remaining Credit</th>
+                              <th className="p-2.5 text-right">Net Cash Due</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-blue-100 font-bold text-slate-800">
+                            <tr>
+                              <td className="p-2.5 text-blue-800 font-black text-sm">{clientOverdraft.toLocaleString()} FCFA</td>
+                              <td className="p-2.5 text-slate-900 font-black text-sm">{liveDue.toLocaleString()} FCFA</td>
+                              <td className="p-2.5">
+                                <div className="space-y-1.5">
+                                  <input
+                                    id="batch_custom_overdraft_input"
+                                    type="number"
+                                    placeholder="Enter overdraft to use..."
+                                    value={overdraftOption === 'custom' ? customOverdraftAmount : (overdraftOption === 'full' ? Math.min(clientOverdraft, liveDue) : '0')}
+                                    onChange={(e) => {
+                                      setOverdraftOption('custom');
+                                      setCustomOverdraftAmount(e.target.value);
+                                    }}
+                                    max={Math.min(clientOverdraft, liveDue)}
+                                    min="0"
+                                    className="w-full h-9 px-3 bg-blue-50/50 border border-blue-300 rounded-lg text-xs font-extrabold text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  />
+                                  <div className="flex gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOverdraftOption('full');
+                                        setCustomOverdraftAmount(String(Math.min(clientOverdraft, liveDue)));
+                                      }}
+                                      className="px-2 py-0.5 bg-blue-600 text-white text-[10px] font-black rounded hover:bg-blue-700 transition-colors cursor-pointer"
+                                    >
+                                      Use All ({Math.min(clientOverdraft, liveDue).toLocaleString()} FCFA)
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOverdraftOption('none');
+                                        setCustomOverdraftAmount('0');
+                                      }}
+                                      className="px-2 py-0.5 bg-slate-200 text-slate-700 text-[10px] font-bold rounded hover:bg-slate-300 transition-colors cursor-pointer"
+                                    >
+                                      Use 0
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-2.5 text-blue-700 font-extrabold text-sm">{remainingCredit.toLocaleString()} FCFA</td>
+                              <td className="p-2.5 text-right font-black text-emerald-800 text-sm">{netCashDue.toLocaleString()} FCFA</td>
+                            </tr>
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   );
@@ -1678,12 +2937,13 @@ export default function IncubatorMod({
                     if (overdraftOption === 'full') {
                       overdraftApplied = Math.min(clientOverdraft, liveDue);
                     } else if (overdraftOption === 'custom') {
-                      overdraftApplied = Math.min(clientOverdraft, Number(customOverdraftAmount) || 0, liveDue);
+                      overdraftApplied = Math.min(clientOverdraft, Math.max(0, Number(customOverdraftAmount) || 0), liveDue);
                     }
                   }
-                  const finalDue = liveDue - overdraftApplied;
+                  const finalDue = Math.max(0, liveDue - overdraftApplied);
                   const enteredPaid = Number(batchAmountPaid) || 0;
                   const finalRemainingUnpaid = Math.max(0, finalDue - enteredPaid);
+                  const excessOverdraftGenerated = enteredPaid > finalDue ? enteredPaid - finalDue : 0;
 
                   return (
                     <div id="live_calculation_box" className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100/60 space-y-2.5">
@@ -1701,15 +2961,22 @@ export default function IncubatorMod({
 
                       {overdraftApplied > 0 && (
                         <div className="flex items-center justify-between border-t border-emerald-100/30 pt-1.5 text-xs">
-                          <span className="text-amber-800 font-medium">Minus Client Overdraft:</span>
-                          <span className="text-amber-700 font-extrabold">-{overdraftApplied.toLocaleString()} FCFA</span>
+                          <span className="text-blue-800 font-medium">Minus Client Overdraft Credit Used:</span>
+                          <span className="text-blue-700 font-extrabold">-{overdraftApplied.toLocaleString()} FCFA</span>
                         </div>
                       )}
 
                       {enteredPaid > 0 && (
                         <div className="flex items-center justify-between border-t border-emerald-100/30 pt-1.5 text-xs">
-                          <span className="text-emerald-800 font-medium">Minus Amount Paid Now:</span>
+                          <span className="text-emerald-800 font-medium">Minus Cash Amount Paid Now:</span>
                           <span className="text-emerald-700 font-extrabold">-{enteredPaid.toLocaleString()} FCFA</span>
+                        </div>
+                      )}
+
+                      {excessOverdraftGenerated > 0 && (
+                        <div className="flex items-center justify-between border-t border-amber-200 pt-1.5 text-xs bg-amber-50/90 p-2.5 rounded-xl">
+                          <span className="text-amber-900 font-extrabold">🎉 Overpayment (New Overdraft Credit for Client):</span>
+                          <span className="text-amber-900 font-black text-sm">+{excessOverdraftGenerated.toLocaleString()} FCFA</span>
                         </div>
                       )}
 
@@ -1816,6 +3083,7 @@ export default function IncubatorMod({
                             <th className="p-1.5 text-right">UNHATCH</th>
                             <th className="p-1.5 text-right">DUE (F)</th>
                             <th className="p-1.5 text-right">PAID (F)</th>
+                            <th className="p-1.5 text-center">OVERDRAFT</th>
                             <th className="p-1.5 text-right">OWED</th>
                             <th className="p-1.5 text-center">STATUS</th>
                             <th className="p-1.5 text-center">ACTION</th>
@@ -1824,7 +3092,7 @@ export default function IncubatorMod({
                         <tbody className="divide-y divide-slate-100 font-medium text-slate-800 text-[11px] whitespace-nowrap">
                           {sortedRecords.length === 0 ? (
                             <tr>
-                              <td colSpan={16} className="p-6 text-center text-slate-400 font-bold bg-slate-50">
+                              <td colSpan={17} className="p-6 text-center text-slate-400 font-bold bg-slate-50">
                                 No incubator setting records found matching criteria.
                               </td>
                             </tr>
@@ -1839,10 +3107,10 @@ export default function IncubatorMod({
                                     {r.clientName} <span className="text-emerald-700 font-mono">[{r.clientMark}]</span>
                                   </td>
                                   <td className="p-1.5 font-bold text-slate-800">{eggShort}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{r.dateBrought}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{r.day8Date}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{r.day18Date}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{r.day21Date}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.dateBrought)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day8Date)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day18Date)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day21Date)}</td>
                                   <td className="p-1.5 text-right font-black text-slate-900">{r.eggsCollected}</td>
                                   <td className="p-1.5 text-right font-bold text-rose-600">
                                     {r.eggsAfterScan !== null ? Math.max(0, r.eggsCollected - r.eggsAfterScan) : 0}
@@ -1853,6 +3121,19 @@ export default function IncubatorMod({
                                   </td>
                                   <td className="p-1.5 text-right font-mono font-bold text-slate-800">{r.amountDue.toLocaleString()}</td>
                                   <td className="p-1.5 text-right font-mono font-bold text-emerald-700">{r.amountPaid.toLocaleString()}</td>
+                                  <td className="p-1.5 text-center font-mono font-bold">
+                                    {r.overdraftUsed && r.overdraftUsed > 0 ? (
+                                      <span className="text-blue-700 bg-blue-50 px-1 py-0.5 rounded text-[10px] border border-blue-100 whitespace-nowrap">
+                                        -{r.overdraftUsed.toLocaleString()} F
+                                      </span>
+                                    ) : r.overdraftGenerated && r.overdraftGenerated > 0 ? (
+                                      <span className="text-amber-800 bg-amber-50 px-1 py-0.5 rounded text-[10px] border border-amber-200 whitespace-nowrap">
+                                        +{r.overdraftGenerated.toLocaleString()} F
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 text-[10px]">0 F</span>
+                                    )}
+                                  </td>
                                   <td className="p-1.5 text-right font-mono font-black text-rose-700">
                                     {owed > 0 ? `${owed.toLocaleString()} F` : 'PAID'}
                                   </td>
@@ -1950,16 +3231,6 @@ export default function IncubatorMod({
               {/* Sorting toggles */}
               <div className="flex flex-wrap gap-1.5">
                 <button
-                  onClick={() => setActiveSort('oldest_brought')}
-                  className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1 transition-all border cursor-pointer ${
-                    activeSort === 'oldest_brought'
-                      ? 'bg-emerald-600 text-white border-emerald-600 font-bold'
-                      : 'bg-slate-50 text-slate-500 border-slate-100 hover:bg-slate-100'
-                  }`}
-                >
-                  Oldest First
-                </button>
-                <button
                   onClick={() => setActiveSort('newest_brought')}
                   className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1 transition-all border cursor-pointer ${
                     activeSort === 'newest_brought'
@@ -1968,6 +3239,16 @@ export default function IncubatorMod({
                   }`}
                 >
                   Newest First
+                </button>
+                <button
+                  onClick={() => setActiveSort('oldest_brought')}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1 transition-all border cursor-pointer ${
+                    activeSort === 'oldest_brought'
+                      ? 'bg-emerald-600 text-white border-emerald-600 font-bold'
+                      : 'bg-slate-50 text-slate-500 border-slate-100 hover:bg-slate-100'
+                  }`}
+                >
+                  Oldest First
                 </button>
                 <button
                   onClick={() => setActiveSort('client_name_az')}
@@ -2032,65 +3313,7 @@ export default function IncubatorMod({
               </div>
             </div>
 
-            {/* Dynamic Hatcher Phase Operations Overview Dashboard */}
-            {(() => {
-              const todayTime = new Date(new Date().toISOString().split('T')[0]).getTime();
-              
-              const activeHatcherList = data.incubator_records.filter(rec => {
-                const isHatched = rec.chicksHatched !== null && rec.chicksHatched !== undefined;
-                if (isHatched) return false;
-                const broughtTime = new Date(rec.dateBrought).getTime();
-                const daysPassed = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
-                const species = rec.eggType || 'Brahma';
-                const transDay = species === 'Turkey' ? 25 : species === 'Quail' ? 15 : species === 'Goose' ? 26 : 18;
-                return daysPassed >= transDay;
-              });
 
-              const upcomingHatcherList = data.incubator_records.filter(rec => {
-                const isHatched = rec.chicksHatched !== null && rec.chicksHatched !== undefined;
-                if (isHatched) return false;
-                const broughtTime = new Date(rec.dateBrought).getTime();
-                const daysPassed = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
-                const species = rec.eggType || 'Brahma';
-                const transDay = species === 'Turkey' ? 25 : species === 'Quail' ? 15 : species === 'Goose' ? 26 : 18;
-                return daysPassed >= transDay - 2 && daysPassed < transDay;
-              });
-
-              if (activeHatcherList.length === 0 && upcomingHatcherList.length === 0) return null;
-
-              return (
-                <div id="hatcher_priority_banner" className="mb-5 p-4 bg-amber-500/5 rounded-2xl border border-amber-500/10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-left">
-                  <div className="flex items-start gap-3">
-                    <div className="bg-amber-100 text-amber-700 p-2.5 rounded-xl mt-0.5 shrink-0">
-                      <Sparkles size={18} className="animate-spin text-amber-600" style={{ animationDuration: '3s' }} />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
-                        <span>Hatcher Phase Priority Monitor</span>
-                        <span className="bg-red-500 text-white font-black text-[9px] px-1.5 py-0.5 rounded-full animate-bounce">
-                          LIVE OPS
-                        </span>
-                      </h4>
-                      <p className="text-[11px] text-slate-600 font-bold mt-1 leading-relaxed">
-                        There {activeHatcherList.length === 1 ? 'is' : 'are'}{' '}
-                        <strong className="text-amber-700 font-black">{activeHatcherList.length} egg batch{activeHatcherList.length === 1 ? '' : 'es'}</strong> ready or past transfer to Hatcher baskets, and{' '}
-                        <strong className="text-indigo-600 font-black">{upcomingHatcherList.length} batch{upcomingHatcherList.length === 1 ? '' : 'es'}</strong> nearing transit.
-                        Highlight markers and dynamic animations are activated in the table columns below to expedite work.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setActiveSort('hatcher_transit')}
-                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-[10px] rounded-lg uppercase tracking-wider shadow-xs transition-all active:scale-95 cursor-pointer"
-                    >
-                      ⚡ Sort By Hatcher Transit
-                    </button>
-                  </div>
-                </div>
-              );
-            })()}
 
             {/* BULK MANAGEMENT CONTROL HUB */}
             {selectedRecordIds.length > 0 && (
@@ -2126,11 +3349,7 @@ export default function IncubatorMod({
                   <button
                     type="button"
                     disabled={bulkEditLoading}
-                    onClick={() => {
-                      if (window.confirm(`Mark all ${selectedRecordIds.length} selected batches as fully paid?`)) {
-                        handleBulkUpdateRecords({ markPaid: true });
-                      }
-                    }}
+                    onClick={() => setShowBulkPaidConfirm(true)}
                     className="px-2.5 py-1 bg-teal-500/20 hover:bg-teal-500 text-teal-200 hover:text-white rounded-lg text-[10px] font-black uppercase transition-all border border-teal-500/20 cursor-pointer disabled:opacity-50 flex items-center gap-1"
                   >
                     <span>💰 Fully Paid</span>
@@ -2158,75 +3377,13 @@ export default function IncubatorMod({
               </div>
             )}
 
-            {/* Quick Table Navigation & Horizontal Scroll Helper Controls */}
-            <div className="flex flex-wrap items-center justify-between gap-2.5 mb-3 px-1 py-2 bg-slate-50 rounded-2xl border border-slate-100">
-              <div className="flex flex-wrap items-center gap-1.5 font-bold text-slate-600">
-                <span className="text-[11px] uppercase tracking-wider text-slate-400 font-black mr-1">Quick Jump:</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById('incubator_table_wrapper');
-                    if (el) el.scrollTo({ left: 0, behavior: 'smooth' });
-                  }}
-                  className="px-2.5 py-1 bg-white hover:bg-slate-200 text-slate-800 rounded-xl text-[11px] font-black border border-slate-200 shadow-2xs transition-all cursor-pointer"
-                >
-                  📋 Start (Cols 1-7)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById('incubator_table_wrapper');
-                    if (el) el.scrollTo({ left: 650, behavior: 'smooth' });
-                  }}
-                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 rounded-xl text-[11px] font-black border border-amber-200/80 shadow-2xs transition-all cursor-pointer"
-                >
-                  🐣 Hatch Status (Cols 4-8)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById('incubator_table_wrapper');
-                    if (el) el.scrollTo({ left: el.scrollWidth, behavior: 'smooth' });
-                  }}
-                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-black shadow-2xs transition-all cursor-pointer"
-                >
-                  💰 Financials & Actions (Cols 8-14) ➔
-                </button>
-              </div>
-
-              <div className="flex items-center gap-1.5 ml-auto">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById('incubator_table_wrapper');
-                    if (el) el.scrollBy({ left: -350, behavior: 'smooth' });
-                  }}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-black transition-all cursor-pointer shadow-2xs flex items-center gap-1"
-                  title="Scroll left"
-                >
-                  ◀ Scroll Left
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById('incubator_table_wrapper');
-                    if (el) el.scrollBy({ left: 350, behavior: 'smooth' });
-                  }}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black transition-all cursor-pointer shadow-2xs flex items-center gap-1"
-                  title="Scroll right to see columns 8 to 14"
-                >
-                  Scroll Right (Cols 8-14) ▶
-                </button>
-              </div>
-            </div>
-
             {/* THE MOST CRITICAL TABLE: EXACT COLUMN ORDER REQUIRED */}
             <div id="incubator_table_wrapper" className="overflow-x-auto select-none rounded-2xl border border-slate-200 shadow-xs max-h-[520px] overflow-y-auto touch-pan-x touch-pan-y scroll-smooth bg-white">
-              <table className="w-full border-collapse text-left min-w-[1650px]">
-                <thead className="bg-slate-50 sticky top-0 text-xs font-extrabold text-slate-500 uppercase tracking-wider border-b border-slate-200 z-10 whitespace-nowrap">
+              <table className="w-full border-collapse text-left min-w-[700px] sm:min-w-[1650px]">
+                <thead className="bg-slate-50 sticky top-0 text-[9px] sm:text-xs font-extrabold text-slate-500 uppercase tracking-wider border-b border-slate-200 z-10 whitespace-nowrap">
                   <tr>
                     {/* Select All Checkbox Column */}
-                    <th className="p-3 bg-slate-50 text-center w-12">
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center w-8 sm:w-12">
                       <input
                         type="checkbox"
                         onClick={(e) => e.stopPropagation()}
@@ -2238,33 +3395,34 @@ export default function IncubatorMod({
                             setSelectedRecordIds([]);
                           }
                         }}
-                        className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                        className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 w-3.5 h-3.5 sm:w-4 sm:h-4 cursor-pointer"
                       />
                     </th>
                     {/* Exact columns structure:
                         1. Client Name, 2. Client Mark, 3. Date Eggs Brought, 4. Day 8, 5. Day 18, 6. Day 21,
                         7. Eggs Collected, 8. Amount Due, 9. Special Case, 10. Amount Paid, 11. Eggs after scan,
                         12. Chicks Hatched, 13. Client Phone, 14. Action edit button */}
-                    <th className="p-3 bg-slate-50 min-w-[150px]">1. Client Name</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[80px]">2. Mark</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[110px]">3. Brought Date</th>
-                    <th className="p-3 bg-slate-100 text-center min-w-[120px]">4. Candling Date</th>
-                    <th className="p-3 bg-slate-100 text-center min-w-[140px]">5. Hatcher Trans</th>
-                    <th className="p-3 bg-slate-100 text-center min-w-[140px]">6. Hatch Date</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[110px]">7. Eggs Brought</th>
-                    <th className="p-3 bg-slate-50 text-right min-w-[120px]">8. Amount Due</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[110px]">9. Special Case</th>
-                    <th className="p-3 bg-slate-50 text-right min-w-[120px]">10. Amount Paid</th>
-                    <th className="p-3 bg-yellow-50/50 text-center min-w-[120px]">11. Eggs Post-Scan</th>
-                    <th className="p-3 bg-emerald-50/20 text-center min-w-[120px]">12. Chicks Hatched</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[130px]">13. WhatsApp Direct</th>
-                    <th className="p-3 bg-slate-50 text-center min-w-[100px]">14. Actions</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 min-w-[90px] sm:min-w-[150px]">1. Client Name</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[45px] sm:min-w-[80px]">2. Mark</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[65px] sm:min-w-[110px]">3. Brought Date</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-100 text-center min-w-[70px] sm:min-w-[120px]">4. Candling Date</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-100 text-center min-w-[80px] sm:min-w-[140px]">5. Hatcher Trans</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-100 text-center min-w-[80px] sm:min-w-[140px]">6. Hatch Date</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[55px] sm:min-w-[110px]">7. Eggs Brought</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-right min-w-[65px] sm:min-w-[120px]">8. Amount Due</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[60px] sm:min-w-[110px]">9. Special Case</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-right min-w-[65px] sm:min-w-[120px]">10. Amount Paid</th>
+                    <th className="p-1.5 sm:p-3 bg-blue-50/50 text-center min-w-[70px] sm:min-w-[130px]">11. Overdraft</th>
+                    <th className="p-1.5 sm:p-3 bg-yellow-50/50 text-center min-w-[60px] sm:min-w-[120px]">12. Eggs Post-Scan</th>
+                    <th className="p-1.5 sm:p-3 bg-emerald-50/20 text-center min-w-[60px] sm:min-w-[120px]">13. Chicks Hatched</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[70px] sm:min-w-[130px]">14. WhatsApp Direct</th>
+                    <th className="p-1.5 sm:p-3 bg-slate-50 text-center min-w-[50px] sm:min-w-[100px]">15. Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-bold text-slate-700 text-[13px] whitespace-nowrap">
+                <tbody className="divide-y divide-slate-100 font-bold text-slate-700 text-[10px] sm:text-[13px] whitespace-nowrap">
                   {sortedRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={15} className="p-8 text-center text-slate-400 font-semibold bg-slate-50/50">
+                      <td colSpan={16} className="p-4 sm:p-8 text-center text-slate-400 font-semibold bg-slate-50/50">
                         No incubator egg batches found. Verify database or register entries above.
                       </td>
                     </tr>
@@ -2282,7 +3440,7 @@ export default function IncubatorMod({
                       const rTransDay = rSpecies === 'Turkey' ? 25 : rSpecies === 'Quail' ? 15 : rSpecies === 'Goose' ? 26 : 18;
                       const rHatchDay = rSpecies === 'Turkey' ? 28 : rSpecies === 'Quail' ? 18 : rSpecies === 'Goose' ? 30 : 21;
 
-                      const isHatched = rec.chicksHatched !== null && rec.chicksHatched !== undefined;
+                      const isHatched = isRecordHatched(rec);
                       const isHatcherActive = !isHatched && rDaysPassed >= rTransDay;
                       const isUpcomingTransit = !isHatched && rDaysPassed >= rTransDay - 2 && rDaysPassed < rTransDay;
                       const isOverdueHatch = !isHatched && rDaysPassed >= rHatchDay;
@@ -2308,7 +3466,7 @@ export default function IncubatorMod({
                       return (
                         <tr key={rec.id} className={`transition-all duration-200 border-b border-slate-100 ${rowBgClass} ${borderClass}`}>
                           {/* Row Checkbox Selector */}
-                          <td className="p-3 text-center w-12">
+                          <td className="p-1.5 sm:p-3 text-center w-8 sm:w-12">
                             <input
                               type="checkbox"
                               onClick={(e) => e.stopPropagation()}
@@ -2320,32 +3478,32 @@ export default function IncubatorMod({
                                   setSelectedRecordIds(selectedRecordIds.filter(id => id !== rec.id));
                                 }
                               }}
-                              className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                              className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 w-3.5 h-3.5 sm:w-4 sm:h-4 cursor-pointer"
                             />
                           </td>
                           {/* 1. Client Name */}
-                          <td className="p-3 text-slate-900 font-black truncate max-w-[150px]" title={rec.clientName}>
+                          <td className="p-1.5 sm:p-3 text-slate-900 font-black truncate max-w-[100px] sm:max-w-[150px]" title={rec.clientName}>
                             <div>{rec.clientName}</div>
-                            <span className="inline-block px-1.5 py-0.5 mt-0.5 rounded text-[9px] font-black uppercase bg-slate-100 text-slate-700">
+                            <span className="inline-block px-1 py-0.2 sm:px-1.5 sm:py-0.5 mt-0.5 rounded text-[8px] sm:text-[9px] font-black uppercase bg-slate-100 text-slate-700">
                               {rec.eggType || 'Brahma'}
                             </span>
                           </td>
                           {/* 2. Client Mark */}
-                          <td className="p-3 text-center text-base font-extrabold text-emerald-800 bg-emerald-50/10">
+                          <td className="p-1.5 sm:p-3 text-center text-xs sm:text-base font-extrabold text-emerald-800 bg-emerald-50/10">
                             {rec.clientMark}
                           </td>
                           {/* 3. Date Eggs Brought */}
-                          <td className="p-3 text-center font-mono text-xs text-slate-500">{rec.dateBrought}</td>
+                          <td className="p-1.5 sm:p-3 text-center font-mono text-[10px] sm:text-xs text-slate-500">{formatDateDDMMYYYY(rec.dateBrought)}</td>
                           
                           {/* 4. Candling Date */}
-                          <td className="p-3 text-center bg-slate-100/30 text-xs font-mono">
+                          <td className="p-1.5 sm:p-3 text-center bg-slate-100/30 text-[10px] sm:text-xs font-mono">
                             {rec.eggType === 'Quail' ? (
                               <span className="text-slate-400 font-bold">N/A</span>
                             ) : (
                               <>
-                                <div>{rec.day8Date}</div>
+                                <div>{formatDateDDMMYYYY(rec.day8Date)}</div>
                                 {rec.eggsAfterScan === null && (
-                                  <span className="text-[9px] font-black uppercase text-amber-500 bg-amber-50 px-1 py-0.2 rounded mt-1 inline-block">
+                                  <span className="text-[8px] sm:text-[9px] font-black uppercase text-amber-500 bg-amber-50 px-1 py-0.2 rounded mt-0.5 inline-block">
                                     CANDLE (D{rec.eggType === 'Turkey' || rec.eggType === 'Goose' ? 10 : 8})
                                   </span>
                                 )}
@@ -2354,24 +3512,24 @@ export default function IncubatorMod({
                           </td>
                           
                           {/* 5. Hatcher Trans */}
-                          <td className={`p-3 text-center text-xs font-mono transition-colors duration-250 ${isHatcherActive ? 'bg-amber-550/[0.04]' : 'bg-slate-100/30'}`}>
-                            <div>{rec.day18Date}</div>
+                          <td className={`p-1.5 sm:p-3 text-center text-[10px] sm:text-xs font-mono transition-colors duration-250 ${isHatcherActive ? 'bg-amber-550/[0.04]' : 'bg-slate-100/30'}`}>
+                            <div>{formatDateDDMMYYYY(rec.day18Date)}</div>
                             {isHatcherActive ? (
-                              <div className="inline-flex items-center gap-1 bg-amber-500 text-white font-black text-[9px] uppercase px-1.5 py-0.5 rounded-md mt-1 tracking-tight shadow-xs animate-pulse">
-                                <span className="relative flex h-2 w-2">
+                              <div className="inline-flex items-center gap-1 bg-amber-500 text-white font-black text-[8px] sm:text-[9px] uppercase px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded-md mt-0.5 tracking-tight shadow-xs animate-pulse">
+                                <span className="relative flex h-1.5 w-1.5 sm:h-2 sm:w-2">
                                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 sm:h-2 sm:w-2 bg-white"></span>
                                 </span>
                                 <span>🚨 HATCHER ACTIVE</span>
                               </div>
                             ) : isUpcomingTransit ? (
-                              <div className="inline-flex items-center gap-1 bg-indigo-500 text-white font-black text-[9px] uppercase px-1.5 py-0.5 rounded-md mt-1 tracking-tight shadow-xs animate-pulse">
-                                <span className="h-1.5 w-1.5 rounded-full bg-indigo-200 block animate-pulse"></span>
+                              <div className="inline-flex items-center gap-1 bg-indigo-500 text-white font-black text-[8px] sm:text-[9px] uppercase px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded-md mt-0.5 tracking-tight shadow-xs animate-pulse">
+                                <span className="h-1 sm:h-1.5 w-1 sm:w-1.5 rounded-full bg-indigo-200 block animate-pulse"></span>
                                 <span>⏳ TRANSIT PREP</span>
                               </div>
                             ) : (
-                              rec.chicksHatched === null && (
-                                <span className="text-[9px] font-black uppercase text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded mt-1 inline-block">
+                              !isRecordHatched(rec) && (
+                                <span className="text-[8px] sm:text-[9px] font-black uppercase text-indigo-600 bg-indigo-50 px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded mt-0.5 inline-block">
                                   TRANS (D{rec.eggType === 'Turkey' ? 25 : rec.eggType === 'Quail' ? 15 : rec.eggType === 'Goose' ? 26 : 18})
                                 </span>
                               )
@@ -2379,19 +3537,19 @@ export default function IncubatorMod({
                           </td>
                           
                           {/* 6. Hatch Date */}
-                          <td className={`p-3 text-center text-xs font-mono transition-colors duration-250 ${isOverdueHatch ? 'bg-rose-500/[0.04]' : 'bg-slate-100/30'}`}>
-                            <div>{rec.day21Date}</div>
+                          <td className={`p-1.5 sm:p-3 text-center text-[10px] sm:text-xs font-mono transition-colors duration-250 ${isOverdueHatch ? 'bg-rose-500/[0.04]' : 'bg-slate-100/30'}`}>
+                            <div>{formatDateDDMMYYYY(rec.day21Date)}</div>
                             {isOverdueHatch ? (
-                              <div className="inline-flex items-center gap-1 bg-rose-600 text-white font-black text-[9px] uppercase px-1.5 py-0.5 rounded-md mt-1 tracking-tight animate-bounce">
-                                <span className="relative flex h-2 w-2">
+                              <div className="inline-flex items-center gap-1 bg-rose-600 text-white font-black text-[8px] sm:text-[9px] uppercase px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded-md mt-0.5 tracking-tight animate-bounce">
+                                <span className="relative flex h-1.5 w-1.5 sm:h-2 sm:w-2">
                                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 sm:h-2 sm:w-2 bg-white"></span>
                                 </span>
                                 <span>⚠️ OVERDUE HATCH</span>
                               </div>
                             ) : (
-                              rec.chicksHatched === null && (
-                                <span className="text-[9px] font-black uppercase text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded mt-1 inline-block">
+                              !isRecordHatched(rec) && (
+                                <span className="text-[8px] sm:text-[9px] font-black uppercase text-rose-500 bg-rose-50 px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded mt-0.5 inline-block">
                                   HATCH (D{rec.eggType === 'Turkey' ? 28 : rec.eggType === 'Quail' ? 18 : rec.eggType === 'Goose' ? 30 : 21})
                                 </span>
                               )
@@ -2399,14 +3557,14 @@ export default function IncubatorMod({
                           </td>
                           
                           {/* 7. Eggs Collected */}
-                          <td className="p-3 text-center text-slate-900 font-black text-sm">{rec.eggsCollected}</td>
+                          <td className="p-1.5 sm:p-3 text-center text-slate-900 font-black text-xs sm:text-sm">{rec.eggsCollected}</td>
                           
                           {/* 8. Amount Due */}
-                          <td className="p-3 text-right text-slate-900 font-extrabold">{rec.amountDue.toLocaleString()}</td>
+                          <td className="p-1.5 sm:p-3 text-right text-slate-900 font-extrabold text-[10px] sm:text-xs">{rec.amountDue.toLocaleString()}</td>
                           
                           {/* 9. Special Case */}
-                          <td className="p-3 text-center">
-                            <span className={`text-[10px] font-black uppercase p-1 px-2 rounded-lg border ${
+                          <td className="p-1.5 sm:p-3 text-center">
+                            <span className={`text-[8px] sm:text-[10px] font-black uppercase p-0.5 px-1 sm:p-1 sm:px-2 rounded-lg border ${
                               rec.specialCase === 'Standard' ? 'bg-slate-50 text-slate-600 border-slate-100' :
                               rec.specialCase === 'Discount' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' :
                               rec.specialCase === 'Free' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
@@ -2417,42 +3575,67 @@ export default function IncubatorMod({
                           </td>
                           
                           {/* 10. Amount Paid */}
-                          <td className={`p-3 text-right font-black ${isPaidFull ? 'text-emerald-700 bg-emerald-50/20' : 'text-slate-800'}`}>
-                            {rec.amountPaid.toLocaleString()}
+                          <td className={`p-1.5 sm:p-3 text-right font-black ${isPaidFull ? 'text-emerald-700 bg-emerald-50/20' : 'text-slate-800'}`}>
+                            <div>{rec.amountPaid.toLocaleString()} FCFA</div>
+                            {rec.overdraftUsed ? (
+                              <span className="text-[8px] sm:text-[10px] font-bold text-blue-700 bg-blue-50 px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded border border-blue-100 mt-0.5 block leading-tight">
+                                (+{rec.overdraftUsed.toLocaleString()} overdraft used)
+                              </span>
+                            ) : null}
+                            {rec.overdraftGenerated ? (
+                              <span className="text-[8px] sm:text-[10px] font-bold text-amber-800 bg-amber-50 px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded border border-amber-200 mt-0.5 block leading-tight">
+                                (+{rec.overdraftGenerated.toLocaleString()} credit created)
+                              </span>
+                            ) : null}
                             {!isPaidFull && (
-                              <div className="text-[10px] font-bold text-rose-600">Owes: {(rec.amountDue - rec.amountPaid).toLocaleString()}</div>
+                              <div className="text-[8px] sm:text-[10px] font-bold text-rose-600 mt-0.5">Owes: {Math.max(0, rec.amountDue - rec.amountPaid - (rec.overdraftUsed || 0)).toLocaleString()} FCFA</div>
                             )}
                           </td>
                           
-                          {/* 11. Eggs After Scan */}
-                          <td className="p-3 text-center bg-yellow-50/10 font-black text-sm text-yellow-700">
+                          {/* 11. Overdraft */}
+                          <td className="p-1.5 sm:p-3 text-center bg-blue-50/10">
+                            {rec.overdraftUsed && rec.overdraftUsed > 0 ? (
+                              <span className="text-blue-800 font-extrabold bg-blue-50 border border-blue-200 px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-md text-[9px] sm:text-xs inline-block">
+                                -{rec.overdraftUsed.toLocaleString()} FCFA (Used)
+                              </span>
+                            ) : rec.overdraftGenerated && rec.overdraftGenerated > 0 ? (
+                              <span className="text-amber-800 font-black bg-amber-50 border border-amber-200 px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-md text-[9px] sm:text-xs inline-block">
+                                +{rec.overdraftGenerated.toLocaleString()} FCFA (Credit)
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-medium text-[9px] sm:text-xs">0 FCFA</span>
+                            )}
+                          </td>
+                          
+                          {/* 12. Eggs After Scan */}
+                          <td className="p-1.5 sm:p-3 text-center bg-yellow-50/10 font-black text-xs sm:text-sm text-yellow-700">
                             {rec.eggsAfterScan !== null ? rec.eggsAfterScan : '—'}
                           </td>
                           
                           {/* 12. Chicks Hatched */}
-                          <td className="p-3 text-center bg-emerald-50/5 font-black text-sm text-emerald-700">
+                          <td className="p-1.5 sm:p-3 text-center bg-emerald-50/5 font-black text-xs sm:text-sm text-emerald-700">
                             {rec.chicksHatched !== null ? rec.chicksHatched : '—'}
                           </td>
                           
                           {/* 13. Client Phone WhatsApp */}
-                          <td className="p-3 text-center">
+                          <td className="p-1.5 sm:p-3 text-center">
                             <button
-                              onClick={() => openWhatsApp(rec.clientPhone, `Hello ${rec.clientName}, update on egg batch brought of date ${rec.dateBrought}: Day 21 status.`)}
-                              className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-100 text-emerald-700 px-2.5 py-1 rounded-lg text-xs hover:bg-emerald-100 hover:scale-105 transition-all cursor-pointer"
+                              onClick={() => openWhatsApp(rec.clientPhone, `Hello ${rec.clientName}, update on egg batch brought of date ${formatDateDDMMYYYY(rec.dateBrought)}: Day 21 status.`)}
+                              className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-100 text-emerald-700 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[10px] sm:text-xs hover:bg-emerald-100 transition-all cursor-pointer"
                             >
-                              <MessageSquare size={13} />
+                              <MessageSquare size={11} />
                               <span>Click WA</span>
                             </button>
                           </td>
                           
                           {/* 14. Edit Record button */}
-                          <td className="p-3 text-center">
+                          <td className="p-1.5 sm:p-3 text-center">
                             <button
                               onClick={() => setSelectedEditRecord(rec)}
-                              className="p-2 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-100 text-slate-500 rounded-lg cursor-pointer transition-colors"
+                              className="p-1 sm:p-2 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-100 text-slate-500 rounded-lg cursor-pointer transition-colors"
                               title="Update incubator status values"
                             >
-                              <FileEdit size={14} />
+                              <FileEdit size={12} className="sm:w-[14px] sm:h-[14px]" />
                             </button>
                           </td>
                         </tr>
@@ -2463,6 +3646,211 @@ export default function IncubatorMod({
               </table>
             </div>
           </div>
+
+          {/* WEEKLY TOTALS SUMMARY TABLE (Mon-Sun calculated from incubator batch inputs) */}
+          <div className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-4 text-left">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-emerald-50 text-emerald-700 rounded-xl">
+                    <Calendar size={18} />
+                  </div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 uppercase tracking-tight">
+                    Weekly Incubator Summary Totals
+                  </h3>
+                </div>
+                <p className="text-xs font-semibold text-slate-500 mt-1 ml-9">
+                  Accurate weekly summaries (Monday to Sunday) auto-calculated from all new egg batch records.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <span className="text-xs font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
+                  {weeklySummaries.length} {weeklySummaries.length === 1 ? 'Week Recorded' : 'Weeks Recorded'}
+                </span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-2xs">
+              <table className="w-full border-collapse text-left min-w-[950px]">
+                <thead className="bg-slate-50/90 text-[11px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200">
+                  <tr>
+                    <th className="p-3.5">Week (Mon - Sun)</th>
+                    <th className="p-3.5 text-center">Number of Clients</th>
+                    <th className="p-3.5">Number of Eggs</th>
+                    <th className="p-3.5">Number After Scan</th>
+                    <th className="p-3.5">Number Hatched</th>
+                    <th className="p-3.5 text-right">Revenue</th>
+                    <th className="p-3.5 text-right">Overdraft</th>
+                    <th className="p-3.5 text-right">Debt</th>
+                    <th className="p-3.5 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-800 text-xs sm:text-sm">
+                  {weeklySummaries.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="p-6 text-center text-slate-400 font-semibold bg-slate-50/40">
+                        No incubator batch records found. Add batch entries in the form above to generate weekly totals.
+                      </td>
+                    </tr>
+                  ) : (
+                    weeklySummaries.map((row) => (
+                      <tr key={row.weekKey} className="hover:bg-slate-50/70 transition-colors">
+                        {/* 1. Week */}
+                        <td className="p-3.5 align-top">
+                          <div className="flex items-center gap-2">
+                            <span className="bg-emerald-600 text-white font-extrabold text-[10px] px-2 py-0.5 rounded-md shadow-2xs">
+                              Week #{row.weekNumber}
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-slate-900 font-mono text-xs mt-1">
+                            {row.label}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-medium mt-0.5">
+                            {row.records.length} {row.records.length === 1 ? 'batch' : 'batches'}
+                          </div>
+                        </td>
+
+                        {/* 2. Number of Clients */}
+                        <td className="p-3.5 text-center align-top">
+                          <div className="inline-flex flex-col items-center">
+                            <span className="font-black text-slate-900 text-base">{row.clientCount}</span>
+                            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                              {row.clientCount === 1 ? 'client' : 'clients'}
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* 3. Number of Eggs */}
+                        <td className="p-3.5 align-top">
+                          <div className="font-black text-amber-950 text-sm">
+                            {row.totalEggs.toLocaleString()} <span className="text-xs font-bold text-amber-800">eggs</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {Object.entries(row.eggsBySpecies).map(([species, count]) => (
+                              <span
+                                key={species}
+                                className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200/80"
+                              >
+                                <span>{species}:</span>
+                                <span className="font-black text-amber-950">{count.toLocaleString()}</span>
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+
+                        {/* 4. Number After Scan */}
+                        <td className="p-3.5 align-top">
+                          <div className="font-black text-yellow-900 text-sm">
+                            {row.totalScan.toLocaleString()} <span className="text-xs font-bold text-yellow-800">scanned</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {Object.entries(row.scanBySpecies).length > 0 ? (
+                              Object.entries(row.scanBySpecies).map(([species, count]) => (
+                                <span
+                                  key={species}
+                                  className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-yellow-50 text-yellow-900 border border-yellow-200/80"
+                                >
+                                  <span>{species}:</span>
+                                  <span className="font-black text-yellow-950">{count.toLocaleString()}</span>
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-semibold italic">No scan data</span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* 5. Number Hatched */}
+                        <td className="p-3.5 align-top">
+                          <div className="font-black text-emerald-900 text-sm">
+                            {row.totalHatched.toLocaleString()} <span className="text-xs font-bold text-emerald-800">hatched</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {Object.entries(row.hatchedBySpecies).length > 0 ? (
+                              Object.entries(row.hatchedBySpecies).map(([species, count]) => (
+                                <span
+                                  key={species}
+                                  className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-900 border border-emerald-200/80"
+                                >
+                                  <span>{species}:</span>
+                                  <span className="font-black text-emerald-950">{count.toLocaleString()}</span>
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-semibold italic">No hatch data</span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* 6. Revenue */}
+                        <td className="p-3.5 text-right font-black text-emerald-700 align-top">
+                          <div className="text-sm">{row.revenue.toLocaleString()} FCFA</div>
+                        </td>
+
+                        {/* 7. Overdraft */}
+                        <td className="p-3.5 text-right font-bold text-blue-700 align-top">
+                          <div className="text-sm">{row.overdraft > 0 ? `${row.overdraft.toLocaleString()} FCFA` : '0 FCFA'}</div>
+                        </td>
+
+                        {/* 8. Debt */}
+                        <td className="p-3.5 text-right font-black align-top">
+                          <div className={`text-sm ${row.debt > 0 ? 'text-rose-600' : 'text-slate-400'}`}>
+                            {row.debt.toLocaleString()} FCFA
+                          </div>
+                        </td>
+
+                        {/* 9. Actions / Edit */}
+                        <td className="p-3.5 text-center align-top">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedWeekSummary(row)}
+                            className="p-1.5 bg-slate-50 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                            title="View & Edit batches for this week"
+                          >
+                            <FileEdit size={14} />
+                            <span>Edit Week</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {weeklySummaries.length > 0 && (
+                  <tfoot className="bg-slate-100/80 font-black text-slate-900 text-xs border-t-2 border-slate-300">
+                    <tr>
+                      <td className="p-3.5 uppercase tracking-wider">Grand Total (All Weeks)</td>
+                      <td className="p-3.5 text-center font-extrabold">
+                        {grandTotals.totalClients} unique
+                      </td>
+                      <td className="p-3.5 text-amber-950 font-black">
+                        {grandTotals.totalEggs.toLocaleString()} eggs
+                      </td>
+                      <td className="p-3.5 text-yellow-900 font-black">
+                        {grandTotals.totalScan.toLocaleString()} scanned
+                      </td>
+                      <td className="p-3.5 text-emerald-950 font-black">
+                        {grandTotals.totalHatched.toLocaleString()} hatched
+                      </td>
+                      <td className="p-3.5 text-right text-emerald-700 font-black">
+                        {grandTotals.totalRevenue.toLocaleString()} FCFA
+                      </td>
+                      <td className="p-3.5 text-right text-blue-800 font-black">
+                        {grandTotals.totalOverdraft.toLocaleString()} FCFA
+                      </td>
+                      <td className="p-3.5 text-right text-rose-700 font-black">
+                        {grandTotals.totalDebt.toLocaleString()} FCFA
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+
+          {/* Real-time Hatching Percentage Circular Analytics Feature */}
+          <HatchingAnalyticsSection records={data.incubator_records} />
         </div>
       )}
 
@@ -2479,116 +3867,114 @@ export default function IncubatorMod({
               </p>
             </div>
 
-            {/* Downloader Button */}
-            <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl flex items-center justify-between gap-4">
+            {/* Downloader Buttons */}
+            <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div className="space-y-1 text-left">
-                <h4 className="text-xs font-black text-emerald-800 uppercase tracking-wide">Need the spreadsheet template?</h4>
+                <h4 className="text-xs font-black text-emerald-800 uppercase tracking-wide">Need the official incubator spreadsheet template?</h4>
                 <p className="text-[11px] text-slate-500 font-semibold leading-relaxed">
-                  Download a matching formatted CSV file, fill in your old data columns, & import.
+                  Download a pre-formatted Excel (.xlsx) or CSV template with headers ready to fill on laptop or phone.
                 </p>
               </div>
-              <button
-                type="button"
-                id="template_download_btn"
-                onClick={downloadSampleCSV}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer shrink-0"
-              >
-                Download Template
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  id="template_download_xlsx_btn"
+                  onClick={() => downloadSampleTemplate('xlsx')}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+                >
+                  <span>📊 Download Excel (.xlsx)</span>
+                </button>
+                <button
+                  type="button"
+                  id="template_download_csv_btn"
+                  onClick={() => downloadSampleTemplate('csv')}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs px-3 py-2.5 rounded-xl transition-colors cursor-pointer border border-slate-200"
+                >
+                  <span>CSV</span>
+                </button>
+              </div>
             </div>
 
             {/* Instruction Column Info */}
             <div className="border border-slate-100 rounded-2xl bg-zinc-50/50 p-5 space-y-4 text-left">
               <div className="space-y-1">
                 <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <span>📊 Standardized 10-Column Format Specifications:</span>
+                  <span>📊 Standardized Column Format Specifications:</span>
                   <span className="bg-emerald-500 text-white font-black text-[9px] px-2 py-0.5 rounded-full uppercase pb-1">
-                    Formulas Ready
+                    Auto-Matching Headers
                   </span>
                 </h4>
                 <p className="text-[11px] text-slate-400 font-semibold">
-                  The downloaded template comes pre-configured with formulas that automatically calculate dates & prices on any row in Microsoft Excel or Google Sheets.
+                  Simplified Template: You only need to enter <strong>Day 1 (Date Brought)</strong>. All schedule dates (Candling, Transfer to Hatcher, Hatching) are calculated automatically! Location is optional.
                 </p>
               </div>
 
               <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 text-[11px] text-slate-650 font-bold">
                 <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">1. Day/Date (Day 1)</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Day/Date (Day 1)"</span>
-                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">E.g., 2026-06-02</p>
+                  <span className="text-slate-400 text-[10px]">1. Day/Date Brought (Day 1)</span>
+                  <span className="text-slate-800 font-extrabold mt-0.5">"Day/Date Brought (Day 1)"</span>
+                  <p className="text-[9px] text-emerald-650 font-extrabold mt-1">E.g., 2026-06-02 (Required)</p>
                 </div>
                 <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">2. Client Name & Mark</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Client Name (Client Mark)"</span>
-                  <p className="text-[9px] text-emerald-650 font-bold mt-1">E.g., John Doe (JD)</p>
+                  <span className="text-slate-400 text-[10px]">2. Client Name</span>
+                  <span className="text-slate-800 font-extrabold mt-0.5">"Client Name"</span>
+                  <p className="text-[9px] text-emerald-650 font-bold mt-1">E.g., John Doe</p>
                 </div>
                 <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">3. Number of Eggs</span>
+                  <span className="text-slate-400 text-[10px]">3. Client Mark</span>
+                  <span className="text-slate-800 font-extrabold mt-0.5">"Client Mark"</span>
+                  <p className="text-[9px] text-emerald-650 font-bold mt-1">E.g., JD (2 letters)</p>
+                </div>
+                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
+                  <span className="text-slate-400 text-[10px]">4. Egg Type / Species</span>
+                  <span className="text-slate-800 font-extrabold mt-0.5">"Egg Type / Species"</span>
+                  <p className="text-[9px] text-indigo-650 font-bold mt-0.5">Brahma, Turkey, Quail, Goose</p>
+                </div>
+                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
+                  <span className="text-slate-400 text-[10px]">5. Number of Eggs</span>
                   <span className="text-slate-800 font-extrabold mt-0.5">"Number of Eggs"</span>
-                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">Numerical count</p>
+                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">E.g., 100</p>
                 </div>
                 <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">4. Candling Date</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Candling Date (Day 8)"</span>
-                  <p className="text-[9px] text-indigo-650 font-bold mt-0.5 italic">Formula: =Day 1 + 7</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">5. Transfer in Hatcher</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Transfer into Hatcher (Day 18)"</span>
-                  <p className="text-[9px] text-indigo-650 font-bold mt-0.5 italic">Formula: =Day 1 + 17</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">6. Hatching Date</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Hatching Date (Day 21)"</span>
-                  <p className="text-[9px] text-indigo-650 font-bold mt-0.5 italic">Formula: =Day 1 + 20</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">7. Amount Due (FCFA)</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Amount Due (FCFA)"</span>
-                  <p className="text-[9px] text-emerald-650 font-bold mt-0.5 italic">Formula: =Eggs * 200</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">8. Amount Paid (FCFA)</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Amount Paid (FCFA)"</span>
-                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">E.g., 10000</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">9. Chicks Hatched</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Number of Chicks Hatched"</span>
-                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">E.g., 85 (or empty)</p>
-                </div>
-                <div className="flex flex-col p-2.5 bg-white rounded-xl border border-slate-100">
-                  <span className="text-slate-400 text-[10px]">10. Clients Contact</span>
-                  <span className="text-slate-800 font-extrabold mt-0.5">"Clients Contact"</span>
-                  <p className="text-[9px] text-zinc-400 font-semibold mt-1">Phone number</p>
+                  <span className="text-slate-400 text-[10px]">6. Tariff / Special Case</span>
+                  <span className="text-slate-800 font-extrabold mt-0.5">"Tariff / Special Case"</span>
+                  <p className="text-[9px] text-indigo-650 font-bold mt-0.5">Standard, Discount, Free, etc.</p>
                 </div>
               </div>
-              <p className="text-[10px] text-slate-400 font-semibold italic mt-2.5 block">
-                💡 Smarter parsing: The application extracts the two-letter client initials automatically from the parenthesis (e.g., "John Doe (JD)" registers client "John Doe" with mark "JD"). It automatically creates client profiles for any unrecognized initials!
-              </p>
+              <div className="p-3 bg-emerald-50 border border-emerald-200/80 rounded-xl text-[11px] text-emerald-900 font-medium space-y-1">
+                <p className="font-black flex items-center gap-1.5 text-emerald-950">
+                  <span>✨ Automatic Schedule Calculation</span>
+                </p>
+                <p className="text-[10px] text-emerald-800 leading-relaxed">
+                  You do not need to enter Candling Date, Transfer Date, or Hatching Date in the template. When imported, the app automatically calculates:
+                  <br />• <strong>Candling Date:</strong> Day 8 (or Day 10 for Turkeys/Geese, skipped for Quails)
+                  <br />• <strong>Transfer Date:</strong> Day 18 (or Day 25/26 for Turkeys/Geese, Day 15 for Quails)
+                  <br />• <strong>Hatching Date:</strong> Day 21 (or Day 28/30 for Turkeys/Geese, Day 18 for Quails)
+                </p>
+              </div>
             </div>
 
             {/* Custom File Upload Input */}
             <div className="space-y-2 text-left">
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
-                Upload Spreadsheet File (.csv format)
+                Upload Spreadsheet File (.xlsx, .xls, .csv)
               </label>
 
               <div className="relative border-2 border-dashed border-slate-200 rounded-3xl p-8 hover:border-emerald-500 flex flex-col items-center justify-center text-center transition-colors bg-slate-50/50">
                 <input
                   type="file"
                   id="csv_import_file_input"
-                  accept=".csv"
+                  accept=".xlsx,.xls,.csv,.tsv"
                   onChange={handleCSVFileChange}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
                 
                 <span className="text-3xl">📊</span>
                 <span className="text-sm font-extrabold text-slate-700 mt-2 block">
-                  {csvFile ? csvFile.name : "Select or drag .csv file here"}
+                  {csvFile ? csvFile.name : "Select or drag Excel (.xlsx / .xls) or CSV file here"}
                 </span>
                 <p className="text-[11px] text-slate-400 font-bold uppercase mt-1">
-                  {csvFile ? `Size: ${(csvFile.size / 1024).toFixed(1)} KB` : "Supports standard CSV spreadsheet format"}
+                  {csvFile ? `Size: ${(csvFile.size / 1024).toFixed(1)} KB` : "Supports Excel (.xlsx, .xls), CSV, & Google Sheets files"}
                 </p>
               </div>
             </div>
@@ -2639,7 +4025,7 @@ export default function IncubatorMod({
                                       <td className="p-2 font-bold">
                                         {row.clientName} <span className="text-slate-500 font-black">[{row.clientMark}]</span>
                                       </td>
-                                      <td className="p-2 font-mono text-slate-500">{row.dateBrought}</td>
+                                      <td className="p-2 font-mono text-slate-500">{formatDateDDMMYYYY(row.dateBrought)}</td>
                                       <td className="p-2 text-right font-extrabold text-slate-900">{row.numberOfEggs}</td>
                                       <td className="p-2 text-center">
                                         <span className="px-2 py-0.5 bg-slate-100 rounded text-[10px] font-extrabold text-slate-700 uppercase">
@@ -2697,7 +4083,7 @@ export default function IncubatorMod({
                             <td className="p-2 font-bold">
                               {row.clientName} <span className="text-slate-500 font-black">[{row.clientMark}]</span>
                             </td>
-                            <td className="p-2 font-mono text-slate-500">{row.dateBrought}</td>
+                            <td className="p-2 font-mono text-slate-500">{formatDateDDMMYYYY(row.dateBrought)}</td>
                             <td className="p-2 text-right font-extrabold">{row.eggsCollected}</td>
                             <td className="p-2 text-center text-[10px] font-black">{row.specialCase}</td>
                             <td className="p-2 text-right font-mono text-xs text-emerald-800">{row.amountPaid.toLocaleString()} FCFA</td>
@@ -2719,16 +4105,38 @@ export default function IncubatorMod({
                   </table>
                 </div>
 
-                {/* Final Submit Trigger button */}
-                <button
-                  type="button"
-                  id="execute_import_submit_btn"
-                  onClick={handleImportSubmit}
-                  disabled={loading}
-                  className="w-full h-14 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-base uppercase rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer"
-                >
-                  <span>⚡ START SPREADSHEET IMPORT OF {parsedRows.length} RECORDS</span>
-                </button>
+                {/* Final Submit Trigger and Cancel buttons */}
+                <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    id="cancel_import_btn"
+                    onClick={() => {
+                      setParsedRows([]);
+                      setCsvFile(null);
+                      setImportNotice('');
+                      setErrorMsg('');
+                      const input = document.getElementById('csv_import_file_input') as HTMLInputElement;
+                      if (input) input.value = '';
+                    }}
+                    className="w-full sm:w-1/3 h-14 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-extrabold text-sm uppercase rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                  >
+                    <span>❌ CANCEL IMPORT</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    id="execute_import_submit_btn"
+                    onClick={handleImportSubmit}
+                    disabled={loading}
+                    className="w-full sm:w-2/3 h-14 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-base uppercase rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                  >
+                    {loading ? (
+                      <span>IMPORTING...</span>
+                    ) : (
+                      <span>⚡ START SPREADSHEET IMPORT OF {parsedRows.length} RECORDS</span>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -2737,14 +4145,14 @@ export default function IncubatorMod({
 
       {/* CLIENT DETAILS EDIT MODAL */}
       {editingClient && (
-        <div id="client_edit_modal_backdrop" className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div id="client_edit_modal" className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-blue-100 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-205 text-slate-800">
+        <div id="client_edit_modal_backdrop" className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div id="client_edit_modal" className="bg-white rounded-3xl w-full max-w-lg shadow-2xl border border-blue-100 overflow-hidden my-auto max-h-[92vh] flex flex-col text-slate-800 animate-in fade-in-50 zoom-in-95 duration-200">
             {/* Modal Header */}
-            <div className="bg-gradient-to-br from-blue-700 to-indigo-900 p-6 text-white relative">
+            <div className="bg-gradient-to-br from-blue-700 to-indigo-900 p-5 text-white relative shrink-0">
               <button
                 type="button"
                 onClick={() => setEditingClient(null)}
-                className="absolute top-5 right-5 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white cursor-pointer transition-colors"
+                className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white cursor-pointer transition-colors"
                 id="close_edit_client_btn"
               >
                 <X size={18} />
@@ -2759,17 +4167,114 @@ export default function IncubatorMod({
             </div>
 
             {/* Modal Form */}
-            <form onSubmit={handleEditClient} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1 select-none">Client Full Name</label>
-                <input
-                  type="text"
-                  value={editClientName || ''}
-                  onChange={(e) => setEditClientName(e.target.value)}
-                  className={largeInputClass}
-                  required
-                />
+            <form onSubmit={handleEditClient} className="p-6 space-y-4 overflow-y-auto max-h-[calc(92vh-120px)] flex-1">
+              {clientEditError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-xs font-bold flex items-center gap-2.5 shadow-2xs">
+                  <AlertCircle size={18} className="shrink-0 text-rose-600" />
+                  <span>{clientEditError}</span>
+                </div>
+              )}
+
+              {clientEditSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-700 text-xs font-bold flex items-center gap-2.5 shadow-2xs">
+                  <CheckCircle2 size={18} className="shrink-0 text-emerald-600" />
+                  <span>{clientEditSuccess}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1 select-none">Client Full Name</label>
+                  <input
+                    type="text"
+                    value={editClientName || ''}
+                    onChange={(e) => {
+                      setEditClientName(e.target.value);
+                      setClientEditError('');
+                    }}
+                    className={largeInputClass}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-emerald-700 uppercase tracking-wider mb-1 ml-1 select-none">Client Mark</label>
+                  <input
+                    type="text"
+                    value={editClientMark || ''}
+                    onChange={(e) => {
+                      setEditClientMark(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10));
+                      setClientEditError('');
+                    }}
+                    className={`${largeInputClass} font-mono font-black text-emerald-800 uppercase text-center tracking-widest`}
+                    required
+                    placeholder="MARK"
+                  />
+                </div>
               </div>
+
+              {/* Suggested Unused Marks Badges */}
+              {(() => {
+                const currentMark = (editClientMark || '').trim().toUpperCase();
+                const usedMarksSet = new Set(
+                  (data.clients || [])
+                    .filter((c: any) => c.id !== editingClient.id)
+                    .map((c: any) => (c.mark || '').trim().toUpperCase())
+                    .filter(Boolean)
+                );
+                const isConflict = currentMark !== '' && usedMarksSet.has(currentMark);
+                const dupeClientObj = isConflict
+                  ? data.clients?.find((c: any) => (c.mark || '').trim().toUpperCase() === currentMark && c.id !== editingClient.id)
+                  : null;
+
+                const suggestedUnused = getSuggestedUnusedMarks(
+                  editClientName || editingClient.name || '',
+                  currentMark,
+                  data.clients || [],
+                  8
+                );
+
+                return (
+                  <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80">
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] font-bold">
+                      <span className="flex items-center gap-1.5 text-slate-700">
+                        <Sparkles size={13} className="text-amber-500 shrink-0 animate-pulse" />
+                        <span>Available Unused Marks (Click to pick):</span>
+                      </span>
+                      {isConflict && (
+                        <span className="text-rose-600 font-extrabold flex items-center gap-1 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                          <AlertCircle size={12} className="shrink-0" />
+                          Mark [{currentMark}] is taken by {dupeClientObj?.name || 'another client'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {suggestedUnused.map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => {
+                            setEditClientMark(m);
+                            setClientEditError('');
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-black tracking-wider uppercase transition-all cursor-pointer border ${
+                            currentMark === m
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                              : 'bg-white hover:bg-emerald-100/70 text-emerald-800 border-emerald-200 hover:border-emerald-400 shadow-2xs'
+                          }`}
+                          title={`Click to select mark ${m}`}
+                        >
+                          +{m}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <p className="text-[10px] text-emerald-700 font-semibold leading-relaxed">
+                * Note: Editing the client mark will immediately update this mark across all existing incubator records and database entries for this client.
+              </p>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2779,7 +4284,7 @@ export default function IncubatorMod({
                     value={editClientPhone || ''}
                     onChange={(e) => setEditClientPhone(e.target.value)}
                     className={largeInputClass}
-                    required
+                    placeholder="Optional phone"
                   />
                 </div>
 
@@ -2790,7 +4295,7 @@ export default function IncubatorMod({
                     value={editClientLoc || ''}
                     onChange={(e) => setEditClientLoc(e.target.value)}
                     className={largeInputClass}
-                    required
+                    placeholder="Optional location"
                   />
                 </div>
               </div>
@@ -2820,10 +4325,10 @@ export default function IncubatorMod({
                   onChange={(e) => setEditClientSpecialCase(e.target.value as SpecialCase)}
                   className="w-full h-12 px-4 rounded-xl border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-extrabold text-slate-800 text-xs bg-white cursor-pointer"
                 >
-                  <option value="Standard">Standard (200 FCFA / egg brought)</option>
+                  <option value="Standard">Standard Species Rate (Quail 100 FCFA, Turkey/Duck/Goose 500 FCFA, Brahma/Others 200 FCFA)</option>
                   <option value="150 Per Egg Brought">150 FCFA Per Egg Brought</option>
-                  <option value="Per Chick">Per Chick Hatched (200 FCFA / chick)</option>
-                  <option value="Per Egg After Scan">Per Egg After Scan (200 FCFA / scanned egg)</option>
+                  <option value="Per Chick">Per Chick Hatched (Standard Rate)</option>
+                  <option value="Per Egg After Scan">Per Egg After Scan (Standard Rate)</option>
                   <option value="Free">Free (0 FCFA)</option>
                   <option value="Custom">Custom Rate</option>
                 </select>
@@ -2832,20 +4337,24 @@ export default function IncubatorMod({
                 </p>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 sticky bottom-0 bg-white z-10">
                 <button
                   type="button"
                   onClick={() => setEditingClient(null)}
-                  className="px-4 h-11 border border-slate-205 rounded-xl text-xs font-bold text-slate-650 hover:bg-slate-50 cursor-pointer"
+                  className="px-4 h-11 border border-slate-200 rounded-xl text-xs font-bold text-slate-650 hover:bg-slate-50 cursor-pointer transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
-                  className="px-6 h-11 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow cursor-pointer transition-colors"
+                  className="px-6 h-11 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md hover:shadow-lg cursor-pointer transition-all disabled:opacity-50 flex items-center gap-2"
                 >
-                  {loading ? 'Saving...' : '💾 Save Changes'}
+                  {loading ? (
+                    <span>Saving...</span>
+                  ) : (
+                    <span>💾 Save Changes</span>
+                  )}
                 </button>
               </div>
             </form>
@@ -2938,7 +4447,7 @@ export default function IncubatorMod({
                 Incubator Record Manager
               </span>
               <h3 className="text-xl font-black mt-2 leading-none">{localEditRecord.clientName}</h3>
-              <p className="text-emerald-100 text-xs mt-1.5 font-medium">Unique Mark: <strong className="text-white text-sm">{localEditRecord.clientMark}</strong> • Placed {localEditRecord.eggsCollected} eggs on {localEditRecord.dateBrought}</p>
+              <p className="text-emerald-100 text-xs mt-1.5 font-medium">Unique Mark: <strong className="text-white text-sm">{localEditRecord.clientMark}</strong> • Placed {localEditRecord.eggsCollected} eggs on {formatDateDDMMYYYY(localEditRecord.dateBrought)}</p>
             </div>
 
             {/* Modal Form */}
@@ -3000,10 +4509,10 @@ export default function IncubatorMod({
                     onChange={(e) => setEditSpecialCase(e.target.value as SpecialCase)}
                     className={largeInputClass}
                   >
-                    <option value="Standard">Standard (200 FCFA / egg brought)</option>
+                    <option value="Standard">Standard ({getStandardRateBySpecies(localEditRecord.eggType)} FCFA / egg brought)</option>
                     <option value="150 Per Egg Brought">150 FCFA Per Egg Brought</option>
-                    <option value="Per Chick">Per Chick Hatched (200 FCFA / chick)</option>
-                    <option value="Per Egg After Scan">Per Egg After Scan (200 FCFA / scanned egg)</option>
+                    <option value="Per Chick">Per Chick Hatched ({getStandardRateBySpecies(localEditRecord.eggType)} FCFA / chick)</option>
+                    <option value="Per Egg After Scan">Per Egg After Scan ({getStandardRateBySpecies(localEditRecord.eggType)} FCFA / scanned egg)</option>
                     <option value="Free">Free (0 FCFA)</option>
                     <option value="Custom">Custom Rate</option>
                   </select>
@@ -3033,7 +4542,7 @@ export default function IncubatorMod({
                     Fertile Eggs (After Candling Scan)
                   </label>
                   <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
-                    Day 8 Expected: {localEditRecord.day8Date || '—'}
+                    Day 8 Expected: {formatDateDDMMYYYY(localEditRecord.day8Date)}
                   </span>
                 </div>
                 <input
@@ -3057,7 +4566,7 @@ export default function IncubatorMod({
                     Chicks Hatched
                   </label>
                   <span className="text-[10px] font-bold text-rose-500 bg-rose-50 px-2 py-0.5 rounded">
-                    Hatch Expected: {localEditRecord.day21Date || '—'}
+                    Hatch Expected: {formatDateDDMMYYYY(localEditRecord.day21Date)}
                   </span>
                 </div>
                 <input
@@ -3080,6 +4589,7 @@ export default function IncubatorMod({
                   <span className="text-xs font-black text-emerald-800">
                     Calculated Due: {computeAmountDue({
                       specialCase: editSpecialCase,
+                      eggType: localEditRecord.eggType,
                       eggsCollected: Number(editEggsCollected) || 0,
                       customRate: Number(editCustomRate) || undefined,
                       ratePerEgg: Number(localEditRecord.ratePerEgg) || undefined,
@@ -3101,14 +4611,27 @@ export default function IncubatorMod({
                   <span className="text-rose-600">
                     Owed: {Math.max(0, computeAmountDue({
                       specialCase: editSpecialCase,
+                      eggType: localEditRecord.eggType,
                       eggsCollected: Number(editEggsCollected) || 0,
                       customRate: Number(editCustomRate) || undefined,
                       ratePerEgg: Number(localEditRecord.ratePerEgg) || undefined,
                       eggsAfterScan: editEggsAfterScan === '' ? null : Number(editEggsAfterScan),
                       chicksHatched: editChicksHatched === '' ? null : Number(editChicksHatched)
-                    }).amountDue - Number(editAmountPaid || 0)).toLocaleString()} FCFA
+                    }).amountDue - Number(editAmountPaid || 0) - (localEditRecord.overdraftUsed || 0)).toLocaleString()} FCFA
                   </span>
                 </div>
+                {localEditRecord.overdraftUsed ? (
+                  <div className="mt-1.5 px-2.5 py-1.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 font-extrabold flex justify-between">
+                    <span>💳 Overdraft Used on Batch:</span>
+                    <span>+{localEditRecord.overdraftUsed.toLocaleString()} FCFA</span>
+                  </div>
+                ) : null}
+                {localEditRecord.overdraftGenerated ? (
+                  <div className="mt-1.5 px-2.5 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-extrabold flex justify-between">
+                    <span>🎉 Overpayment Credit Created:</span>
+                    <span>+{localEditRecord.overdraftGenerated.toLocaleString()} FCFA</span>
+                  </div>
+                ) : null}
               </div>
 
               {/* Notes */}
@@ -3172,139 +4695,260 @@ export default function IncubatorMod({
 
       {/* FULLSCREEN TABLE OVERLAY MODAL */}
       {fullscreenTable && (
-        <div className="fixed inset-0 z-[99999] bg-slate-950/85 backdrop-blur-md flex flex-col p-2 sm:p-4 animate-in fade-in duration-200 select-none">
-          <div className="bg-white rounded-3xl shadow-2xl flex flex-col h-full overflow-hidden border border-slate-800">
-            {/* Modal Header */}
-            <div className="p-3 sm:p-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3 shrink-0 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black">
-                  {fullscreenTable.icon || <Egg size={20} />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm sm:text-base font-black uppercase tracking-tight text-white">
-                      {fullscreenTable.title}
-                    </h3>
-                    {fullscreenTable.badge && (
-                      <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase border border-emerald-500/30">
-                        {fullscreenTable.badge}
-                      </span>
-                    )}
-                  </div>
-                  {fullscreenTable.subtitle && (
-                    <p className="text-slate-400 text-[11px] font-medium hidden sm:block">
-                      {fullscreenTable.subtitle}
-                    </p>
-                  )}
-                </div>
-              </div>
+        <div className="fixed inset-0 z-[99999] bg-white flex flex-col h-screen w-screen overflow-hidden select-none animate-in fade-in duration-150">
+          {/* Minimal Floating Top Control Bar */}
+          <div className="bg-slate-900 text-white px-3 py-1.5 flex items-center justify-between shrink-0 border-b border-slate-800 z-50">
+            <div className="flex items-center gap-2 text-slate-300 text-xs font-bold">
+              <span className="truncate max-w-[200px] sm:max-w-[400px] text-slate-200 uppercase tracking-wide">
+                {fullscreenTable.title}
+              </span>
+              {fullscreenTable.badge && (
+                <span className="hidden md:inline bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border border-emerald-500/30">
+                  {fullscreenTable.badge}
+                </span>
+              )}
+            </div>
 
+            <div className="flex items-center gap-2">
               {/* Interactive Zoom Controls Toolbar */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-2xl p-1 text-white shadow-inner">
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom Out (-)"
-                  >
-                    <ZoomOut size={15} />
-                  </button>
+              <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-xl p-1 text-white shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom Out (-)"
+                >
+                  <ZoomOut size={16} />
+                </button>
 
-                  <div className="flex items-center gap-1 px-1">
-                    <span className="font-mono font-black text-xs text-emerald-400 min-w-[36px] text-center">
-                      {fullscreenZoom}%
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom In (+)"
-                  >
-                    <ZoomIn size={15} />
-                  </button>
-
-                  {/* Preset Scale Buttons */}
-                  <div className="hidden md:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
-                    {[
-                      { label: '50%', val: 50 },
-                      { label: '75%', val: 75 },
-                      { label: '85%', val: 85 },
-                      { label: '100%', val: 100 },
-                      { label: '125%', val: 125 }
-                    ].map(p => (
-                      <button
-                        key={p.val}
-                        type="button"
-                        onClick={() => setFullscreenZoom(p.val)}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
-                          fullscreenZoom === p.val 
-                            ? 'bg-emerald-500 text-slate-950 font-black' 
-                            : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(100)}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
-                    title="Reset Zoom to 100% Fit"
-                  >
-                    <RotateCcw size={14} />
-                  </button>
+                <div className="flex items-center gap-1 px-1">
+                  <span className="font-mono font-bold text-xs text-emerald-400 min-w-[36px] text-center">
+                    {fullscreenZoom}%
+                  </span>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-2xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 border border-slate-700"
+                  onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom In (+)"
                 >
-                  <Minimize2 size={16} />
-                  <span className="hidden sm:inline">Exit Fullscreen</span>
+                  <ZoomIn size={16} />
+                </button>
+
+                {/* Preset Scale Buttons */}
+                <div className="hidden lg:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
+                  {[
+                    { label: '50%', val: 50 },
+                    { label: '75%', val: 75 },
+                    { label: '100%', val: 100 },
+                    { label: '125%', val: 125 }
+                  ].map(p => (
+                    <button
+                      key={p.val}
+                      type="button"
+                      onClick={() => setFullscreenZoom(p.val)}
+                      className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold cursor-pointer transition-colors ${
+                        fullscreenZoom === p.val 
+                          ? 'bg-emerald-500 text-slate-950 font-black' 
+                          : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(100)}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
+                  title="Reset Zoom (100%)"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </div>
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => setFullscreenTable(null)}
+                className="p-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 shadow-xs"
+                title="Close Fullscreen View (Esc)"
+              >
+                <X size={16} />
+                <span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Modal Content - Touch Pinch Zoomable Container taking 100% space */}
+          <div 
+            className="flex-1 w-full h-full overflow-auto p-0 bg-white touch-pan-x touch-pan-y relative"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            <div 
+              style={{ 
+                zoom: fullscreenZoom / 100,
+                WebkitZoom: fullscreenZoom / 100,
+                transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
+              }}
+              className="w-full h-full min-w-full"
+            >
+              {fullscreenTable.content}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SINGLE RECORD DELETE CONFIRMATION MODAL */}
+      {recordToDelete && (
+        <div id="delete_record_modal_backdrop" className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div id="delete_record_modal" className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-rose-100 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200 text-slate-800">
+            <div className="bg-gradient-to-br from-rose-600 to-red-800 p-6 text-white relative">
+              <button
+                type="button"
+                onClick={() => setRecordToDelete(null)}
+                className="absolute top-5 right-5 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white cursor-pointer transition-colors"
+              >
+                <X size={18} />
+              </button>
+              <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center text-white mb-3">
+                <Trash2 size={22} />
+              </div>
+              <h3 className="text-xl font-black leading-tight">Delete Incubator Batch?</h3>
+              <p className="text-rose-100 text-xs mt-1 font-medium">
+                This will permanently remove the batch and adjust financial ledger records.
+              </p>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5 text-xs text-slate-700 font-medium">
+                <p><strong>Client:</strong> {recordToDelete.clientName} <span className="text-slate-500 font-black">[{recordToDelete.clientMark}]</span></p>
+                <p><strong>Date Placed:</strong> {formatDateDDMMYYYY(recordToDelete.dateBrought)}</p>
+                <p><strong>Eggs Collected:</strong> <strong className="text-slate-900">{recordToDelete.eggsCollected}</strong> ({recordToDelete.eggType || 'Chicken'})</p>
+                {recordToDelete.amountPaid > 0 && (
+                  <p className="text-emerald-700 font-bold"><strong>Amount Paid:</strong> {recordToDelete.amountPaid.toLocaleString()} FCFA</p>
+                )}
+              </div>
+
+              <p className="text-xs text-rose-600 font-bold bg-rose-50 p-3 rounded-xl border border-rose-100 leading-relaxed">
+                ⚠️ Warning: All associated candling scan data and chick hatch logs for this batch will be permanently removed.
+              </p>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRecordToDelete(null)}
+                  disabled={loading}
+                  className="px-4 h-11 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => confirmDeleteSingleRecord(recordToDelete.id)}
+                  disabled={loading}
+                  className="px-6 h-11 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow cursor-pointer transition-colors"
+                >
+                  {loading ? 'Deleting...' : 'Yes, Delete Batch'}
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Modal Content - Touch Pinch Zoomable Container */}
-            <div 
-              className="flex-1 overflow-auto p-2 sm:p-4 bg-slate-100/70 touch-pan-x touch-pan-y relative"
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-            >
-              <div 
-                style={{ 
-                  zoom: fullscreenZoom / 100,
-                  WebkitZoom: fullscreenZoom / 100,
-                  transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
-                }}
-                className="w-full min-w-full"
+      {/* BULK DELETE CONFIRMATION MODAL */}
+      {showBulkDeleteConfirm && (
+        <div id="bulk_delete_modal_backdrop" className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div id="bulk_delete_modal" className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-rose-100 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200 text-slate-800">
+            <div className="bg-gradient-to-br from-rose-600 to-red-800 p-6 text-white relative">
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteConfirm(false)}
+                className="absolute top-5 right-5 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white cursor-pointer transition-colors"
               >
-                {fullscreenTable.content}
+                <X size={18} />
+              </button>
+              <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center text-white mb-3">
+                <Trash2 size={22} />
               </div>
+              <h3 className="text-xl font-black leading-tight">Delete {selectedRecordIds.length} Selected Batches?</h3>
+              <p className="text-rose-100 text-xs mt-1 font-medium">
+                Bulk deletion is permanent and cannot be undone.
+              </p>
             </div>
 
-            {/* Modal Footer */}
-            <div className="p-2.5 sm:p-3 bg-white border-t border-slate-200 flex items-center justify-between shrink-0 text-xs font-semibold text-slate-500">
-              <span className="hidden sm:inline text-[11px] text-slate-400">
-                Pinch on screen or use zoom controls above • Press Esc to close
-              </span>
-              <div className="flex items-center gap-2 ml-auto">
-                <span className="text-[11px] font-bold text-slate-600 sm:hidden">
-                  Pinch or tap +/- to zoom
-                </span>
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-700 font-medium leading-relaxed">
+                You are about to permanently delete <strong className="text-rose-700 font-black">{selectedRecordIds.length} selected incubator batches</strong> along with all their candling scans and hatch history records.
+              </p>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs rounded-xl transition-colors cursor-pointer"
+                  onClick={() => setShowBulkDeleteConfirm(false)}
+                  disabled={bulkEditLoading}
+                  className="px-4 h-11 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
                 >
-                  Close
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmBulkDeleteRecords}
+                  disabled={bulkEditLoading}
+                  className="px-6 h-11 bg-rose-600 hover:bg-rose-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow cursor-pointer transition-colors"
+                >
+                  {bulkEditLoading ? 'Deleting...' : `Yes, Delete ${selectedRecordIds.length} Batches`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK PAID CONFIRMATION MODAL */}
+      {showBulkPaidConfirm && (
+        <div id="bulk_paid_modal_backdrop" className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div id="bulk_paid_modal" className="bg-white rounded-3xl w-full max-w-md shadow-2xl border border-teal-100 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200 text-slate-800">
+            <div className="bg-gradient-to-br from-teal-600 to-emerald-800 p-6 text-white relative">
+              <button
+                type="button"
+                onClick={() => setShowBulkPaidConfirm(false)}
+                className="absolute top-5 right-5 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white cursor-pointer transition-colors"
+              >
+                <X size={18} />
+              </button>
+              <h3 className="text-xl font-black leading-tight">Mark {selectedRecordIds.length} Batches as Fully Paid?</h3>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-700 font-medium leading-relaxed">
+                This will clear all outstanding debt balances and update the status to fully paid for <strong className="text-emerald-700 font-black">{selectedRecordIds.length} selected batches</strong>.
+              </p>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkPaidConfirm(false)}
+                  disabled={bulkEditLoading}
+                  className="px-4 h-11 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBulkPaidConfirm(false);
+                    handleBulkUpdateRecords({ markPaid: true });
+                  }}
+                  disabled={bulkEditLoading}
+                  className="px-6 h-11 bg-teal-600 hover:bg-teal-700 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow cursor-pointer transition-colors"
+                >
+                  {bulkEditLoading ? 'Updating...' : 'Yes, Mark Paid'}
                 </button>
               </div>
             </div>
@@ -3482,7 +5126,7 @@ export function ClientLedger({
   const compiledEggsAfterScan = scannedBatches.reduce((acc, r) => acc + (r.eggsAfterScan || 0), 0);
   const compiledCandlingPercentage = eggsDeliveredForScanned > 0 ? (compiledEggsAfterScan / eggsDeliveredForScanned) * 100 : 0;
 
-  const hatchedBatches = filteredRecords.filter(r => r.chicksHatched !== null && r.chicksHatched !== undefined);
+  const hatchedBatches = filteredRecords.filter(r => isRecordHatched(r));
   const eggsDeliveredForHatched = hatchedBatches.reduce((acc, r) => acc + r.eggsCollected, 0);
   const eggsScannedForHatched = hatchedBatches.reduce((acc, r) => acc + (r.eggsAfterScan || r.eggsCollected), 0);
   const compiledHatched = hatchedBatches.reduce((acc, r) => acc + (r.chicksHatched || 0), 0);
@@ -3491,8 +5135,11 @@ export function ClientLedger({
 
   const compiledAmountDue = filteredRecords.reduce((acc, r) => acc + (r.amountDue || 0), 0);
   const compiledAmountPaid = filteredRecords.reduce((acc, r) => acc + (r.amountPaid || 0), 0);
-  const compiledAmountOwed = filteredRecords.reduce((acc, r) => acc + Math.max(0, r.amountDue - r.amountPaid - (r.overdraftUsed || 0)), 0);
-  const currentOverdraft = localClient.overdraft || 0;
+  const compiledOverdraftUsed = filteredRecords.reduce((acc, r) => acc + (r.overdraftUsed || 0), 0);
+  const compiledNetDue = Math.max(0, compiledAmountDue - compiledOverdraftUsed);
+  const compiledNetBalance = compiledAmountPaid - compiledNetDue;
+  const compiledAmountOwed = compiledNetBalance < 0 ? Math.abs(compiledNetBalance) : 0;
+  const currentOverdraft = compiledNetBalance > 0 ? compiledNetBalance : 0;
 
   return (
     <div id="ledger_modal_backdrop" className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -3758,7 +5405,7 @@ export function ClientLedger({
                             const owed = Math.max(0, rec.amountDue - rec.amountPaid - (rec.overdraftUsed || 0));
                             return (
                               <tr key={rec.id} className="hover:bg-slate-50/50">
-                                <td className="p-3 font-mono font-bold text-slate-800">{rec.dateBrought}</td>
+                                <td className="p-3 font-mono font-bold text-slate-800">{formatDateDDMMYYYY(rec.dateBrought)}</td>
                                 <td className="p-3 font-bold text-slate-900">{rec.eggType || 'Chicken'}</td>
                                 <td className="p-3 font-extrabold text-slate-900">{rec.eggsCollected}</td>
                                 <td className="p-3 font-bold text-emerald-700">{rec.chicksHatched || 0}</td>
@@ -3805,23 +5452,23 @@ export function ClientLedger({
 
           {/* Batch Data Table */}
           {filteredRecords.length === 0 ? (
-            <div className="p-12 text-center text-slate-400 font-semibold italic bg-slate-50 rounded-2xl">
+            <div className="p-8 sm:p-12 text-center text-slate-400 font-semibold italic bg-slate-50 rounded-2xl text-xs sm:text-sm">
               No egg batches delivered during this specified timeframe.
             </div>
           ) : (
-            <div className="border border-slate-100 rounded-2xl overflow-hidden shadow-xs">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-50 uppercase text-[10px] font-bold text-slate-500 tracking-wider">
+            <div className="border border-slate-100 rounded-2xl overflow-x-auto shadow-xs">
+              <table className="w-full text-left border-collapse text-[10px] sm:text-xs min-w-[550px] sm:min-w-full">
+                <thead className="bg-slate-50 uppercase text-[8px] sm:text-[10px] font-bold text-slate-500 tracking-wider">
                   <tr>
-                    <th className="p-3">Delivered Date</th>
-                    <th className="p-3">Egg Type</th>
-                    <th className="p-3">Eggs Count</th>
-                    <th className="p-3">Hatched</th>
-                    <th className="p-3">Due (FCFA)</th>
-                    <th className="p-3">Paid (FCFA)</th>
-                    <th className="p-3">Owed Amount</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 text-center">Action</th>
+                    <th className="p-1.5 sm:p-3">Delivered Date</th>
+                    <th className="p-1.5 sm:p-3">Egg Type</th>
+                    <th className="p-1.5 sm:p-3">Eggs Count</th>
+                    <th className="p-1.5 sm:p-3">Hatched</th>
+                    <th className="p-1.5 sm:p-3">Due (FCFA)</th>
+                    <th className="p-1.5 sm:p-3">Paid (FCFA)</th>
+                    <th className="p-1.5 sm:p-3">Owed Amount</th>
+                    <th className="p-1.5 sm:p-3">Status</th>
+                    <th className="p-1.5 sm:p-3 text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
@@ -3829,41 +5476,41 @@ export function ClientLedger({
                     const owed = Math.max(0, rec.amountDue - rec.amountPaid - (rec.overdraftUsed || 0));
                     return (
                       <tr key={rec.id} className="hover:bg-slate-50/40">
-                        <td className="p-3 font-mono text-slate-500">{rec.dateBrought}</td>
-                        <td className="p-3">
-                          <span className="bg-slate-100 font-extrabold text-[10px] uppercase text-slate-700 px-1.5 py-0.5 rounded">
+                        <td className="p-1.5 sm:p-3 font-mono text-slate-500 text-[10px] sm:text-xs">{formatDateDDMMYYYY(rec.dateBrought)}</td>
+                        <td className="p-1.5 sm:p-3">
+                          <span className="bg-slate-100 font-extrabold text-[8px] sm:text-[10px] uppercase text-slate-700 px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded">
                             {rec.eggType || 'Brahma'}
                           </span>
                         </td>
-                        <td className="p-3 font-extrabold text-slate-900">{rec.eggsCollected}</td>
-                        <td className="p-3 font-bold text-emerald-700">{rec.chicksHatched !== null && rec.chicksHatched !== undefined ? rec.chicksHatched : '—'}</td>
-                        <td className="p-3">{rec.amountDue.toLocaleString()}</td>
-                        <td className="p-3 text-emerald-600">
+                        <td className="p-1.5 sm:p-3 font-extrabold text-slate-900">{rec.eggsCollected}</td>
+                        <td className="p-1.5 sm:p-3 font-bold text-emerald-700">{rec.chicksHatched !== null && rec.chicksHatched !== undefined ? rec.chicksHatched : '—'}</td>
+                        <td className="p-1.5 sm:p-3">{rec.amountDue.toLocaleString()}</td>
+                        <td className="p-1.5 sm:p-3 text-emerald-600">
                           {rec.amountPaid.toLocaleString()}
                           {rec.overdraftUsed ? (
-                            <span className="text-[9px] text-blue-600 block leading-tight mt-0.5 font-bold">
+                            <span className="text-[8px] sm:text-[9px] text-blue-600 block leading-tight mt-0.5 font-bold">
                               (+{rec.overdraftUsed} overdraft)
                             </span>
                           ) : null}
                         </td>
-                        <td className="p-3 font-black text-rose-700">{owed.toLocaleString()}</td>
-                        <td className="p-3">
+                        <td className="p-1.5 sm:p-3 font-black text-rose-700">{owed.toLocaleString()}</td>
+                        <td className="p-1.5 sm:p-3">
                           {owed === 0 ? (
-                            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full font-extrabold uppercase">Cleared</span>
+                            <span className="text-[8px] sm:text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 sm:px-2.5 sm:py-0.5 rounded-full font-extrabold uppercase">Cleared</span>
                           ) : (
-                            <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-extrabold uppercase truncate">Unpaid</span>
+                            <span className="text-[8px] sm:text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-full font-extrabold uppercase truncate">Unpaid</span>
                           )}
                         </td>
-                        <td className="p-3 text-center">
+                        <td className="p-1.5 sm:p-3 text-center">
                           <button
                             type="button"
                             onClick={() => {
                               if (onSelectEditRecord) onSelectEditRecord(rec);
                             }}
-                            className="p-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 rounded-lg cursor-pointer transition-colors inline-flex items-center gap-1 text-[11px] font-bold"
+                            className="p-1 sm:p-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 rounded-lg cursor-pointer transition-colors inline-flex items-center gap-0.5 sm:gap-1 text-[10px] sm:text-[11px] font-bold"
                             title="Edit Batch"
                           >
-                            <FileEdit size={13} />
+                            <FileEdit size={11} className="sm:w-[13px] sm:h-[13px]" />
                             <span>Edit</span>
                           </button>
                         </td>
@@ -3921,145 +5568,114 @@ export function ClientLedger({
 
       {/* FULLSCREEN TABLE OVERLAY MODAL */}
       {fullscreenTable && (
-        <div className="fixed inset-0 z-[99999] bg-slate-950/85 backdrop-blur-md flex flex-col p-2 sm:p-4 animate-in fade-in duration-200 select-none">
-          <div className="bg-white rounded-3xl shadow-2xl flex flex-col h-full overflow-hidden border border-slate-800">
-            {/* Modal Header */}
-            <div className="p-3 sm:p-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3 shrink-0 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black">
-                  {fullscreenTable.icon || <Egg size={20} />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm sm:text-base font-black uppercase tracking-tight text-white">
-                      {fullscreenTable.title}
-                    </h3>
-                    {fullscreenTable.badge && (
-                      <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase border border-emerald-500/30">
-                        {fullscreenTable.badge}
-                      </span>
-                    )}
-                  </div>
-                  {fullscreenTable.subtitle && (
-                    <p className="text-slate-400 text-[11px] font-medium hidden sm:block">
-                      {fullscreenTable.subtitle}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Interactive Zoom Controls Toolbar */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-2xl p-1 text-white shadow-inner">
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom Out (-)"
-                  >
-                    <ZoomOut size={15} />
-                  </button>
-
-                  <div className="flex items-center gap-1 px-1">
-                    <span className="font-mono font-black text-xs text-emerald-400 min-w-[36px] text-center">
-                      {fullscreenZoom}%
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom In (+)"
-                  >
-                    <ZoomIn size={15} />
-                  </button>
-
-                  {/* Preset Scale Buttons */}
-                  <div className="hidden md:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
-                    {[
-                      { label: '50%', val: 50 },
-                      { label: '75%', val: 75 },
-                      { label: '85%', val: 85 },
-                      { label: '100%', val: 100 },
-                      { label: '125%', val: 125 }
-                    ].map(p => (
-                      <button
-                        key={p.val}
-                        type="button"
-                        onClick={() => setFullscreenZoom(p.val)}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
-                          fullscreenZoom === p.val 
-                            ? 'bg-emerald-500 text-slate-950 font-black' 
-                            : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(100)}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
-                    title="Reset Zoom to 100% Fit"
-                  >
-                    <RotateCcw size={14} />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-2xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 border border-slate-700"
-                >
-                  <Minimize2 size={16} />
-                  <span className="hidden sm:inline">Exit Fullscreen</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Content - Touch Pinch Zoomable Container */}
-            <div 
-              className="flex-1 overflow-auto p-2 sm:p-4 bg-slate-100/70 touch-pan-x touch-pan-y relative"
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-            >
-              <div 
-                style={{ 
-                  zoom: fullscreenZoom / 100,
-                  WebkitZoom: fullscreenZoom / 100,
-                  transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
-                }}
-                className="w-full min-w-full"
-              >
-                {fullscreenTable.content}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-2.5 sm:p-3 bg-white border-t border-slate-200 flex items-center justify-between shrink-0 text-xs font-semibold text-slate-500">
-              <span className="hidden sm:inline text-[11px] text-slate-400">
-                Pinch on screen or use zoom controls above • Press Esc to close
+        <div className="fixed inset-0 z-[99999] bg-white flex flex-col h-screen w-screen overflow-hidden select-none animate-in fade-in duration-150">
+          {/* Minimal Floating Top Control Bar */}
+          <div className="bg-slate-900 text-white px-3 py-1.5 flex items-center justify-between shrink-0 border-b border-slate-800 z-50">
+            <div className="flex items-center gap-2 text-slate-300 text-xs font-bold">
+              <span className="truncate max-w-[200px] sm:max-w-[400px] text-slate-200 uppercase tracking-wide">
+                {fullscreenTable.title}
               </span>
-              <div className="flex items-center gap-2 ml-auto">
-                <span className="text-[11px] font-bold text-slate-600 sm:hidden">
-                  Pinch or tap +/- to zoom
+              {fullscreenTable.badge && (
+                <span className="hidden md:inline bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border border-emerald-500/30">
+                  {fullscreenTable.badge}
                 </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Interactive Zoom Controls Toolbar */}
+              <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-xl p-1 text-white shadow-inner">
                 <button
                   type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs rounded-xl transition-colors cursor-pointer"
+                  onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom Out (-)"
                 >
-                  Close
+                  <ZoomOut size={16} />
+                </button>
+
+                <div className="flex items-center gap-1 px-1">
+                  <span className="font-mono font-bold text-xs text-emerald-400 min-w-[36px] text-center">
+                    {fullscreenZoom}%
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom In (+)"
+                >
+                  <ZoomIn size={16} />
+                </button>
+
+                {/* Preset Scale Buttons */}
+                <div className="hidden lg:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
+                  {[
+                    { label: '50%', val: 50 },
+                    { label: '75%', val: 75 },
+                    { label: '100%', val: 100 },
+                    { label: '125%', val: 125 }
+                  ].map(p => (
+                    <button
+                      key={p.val}
+                      type="button"
+                      onClick={() => setFullscreenZoom(p.val)}
+                      className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold cursor-pointer transition-colors ${
+                        fullscreenZoom === p.val 
+                          ? 'bg-emerald-500 text-slate-950 font-black' 
+                          : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(100)}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
+                  title="Reset Zoom (100%)"
+                >
+                  <RotateCcw size={14} />
                 </button>
               </div>
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => setFullscreenTable(null)}
+                className="p-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 shadow-xs"
+                title="Close Fullscreen View (Esc)"
+              >
+                <X size={16} />
+                <span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Modal Content - Touch Pinch Zoomable Container taking 100% space */}
+          <div 
+            className="flex-1 w-full h-full overflow-auto p-0 bg-white touch-pan-x touch-pan-y relative"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            <div 
+              style={{ 
+                zoom: fullscreenZoom / 100,
+                WebkitZoom: fullscreenZoom / 100,
+                transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
+              }}
+              className="w-full h-full min-w-full"
+            >
+              {fullscreenTable.content}
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Home, Egg, Users, BarChart3, LogOut, Heart, Bell, FileSpreadsheet } from 'lucide-react';
+import { Home, Egg, Users, BarChart3, LogOut, Heart, Bell, Search } from 'lucide-react';
 import { ActiveTab } from '../types';
 import SyncStatus from './SyncStatus';
 import AppLogo from './AppLogo';
@@ -17,6 +17,7 @@ interface NavbarProps {
   unreadNotificationsCount?: number;
   onOpenNotifications?: () => void;
   onOpenExcelImport?: () => void;
+  onOpenSearch?: () => void;
   token?: string | null;
   onSyncComplete?: () => void;
 }
@@ -29,38 +30,41 @@ export default function Navbar({
   unreadNotificationsCount = 0,
   onOpenNotifications,
   onOpenExcelImport,
+  onOpenSearch,
   token = null,
   onSyncComplete
 }: NavbarProps) {
-  const tabs: { id: ActiveTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'home', label: 'Home', icon: <Home size={22} className="stroke-[2.2]" /> },
-    { id: 'farm', label: 'Farm', icon: <Heart size={22} className="stroke-[2.2]" /> },
-    { id: 'incubator', label: 'Incubator', icon: <Egg size={22} className="stroke-[2.2]" /> },
-    { id: 'reports', label: 'Reports', icon: <BarChart3 size={22} className="stroke-[2.2]" /> },
+  const tabs: { id: ActiveTab; label: string; icon: React.ReactNode; description: string }[] = [
+    { id: 'home', label: 'Home', icon: <Home size={19} className="stroke-[2.2]" />, description: 'Overview & Tasks' },
+    { id: 'farm', label: 'Farm', icon: <Heart size={19} className="stroke-[2.2]" />, description: 'Flocks & Inventory' },
+    { id: 'incubator', label: 'Incubator', icon: <Egg size={19} className="stroke-[2.2]" />, description: 'Batches & Clients' },
+    { id: 'reports', label: 'Reports', icon: <BarChart3 size={19} className="stroke-[2.2]" />, description: 'Analytics & PDF' },
   ];
 
   return (
     <>
-      {/* Top Header for Branding and User Status */}
-      <header id="app_header" className="sticky top-0 z-40 bg-white border-b border-emerald-100 px-4 sm:px-6 lg:px-8 py-2.5 shadow-xs">
-        <div className="max-w-md md:max-w-5xl lg:max-w-7xl xl:max-w-[1536px] mx-auto w-full flex items-center justify-between gap-4">
+      {/* Modern Translucent App Header */}
+      <header id="app_header" className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3 sm:px-6 lg:px-8 py-2 sm:py-2.5 transition-all shadow-2xs">
+        <div className="max-w-7xl xl:max-w-[1536px] mx-auto w-full flex items-center justify-between gap-2 sm:gap-4">
           <AppLogo size="sm" />
 
-          {/* Desktop Laptop Top Navigation Bar Tabs */}
-          <nav className="hidden md:flex items-center gap-1.5 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/70 shadow-inner">
+          {/* Desktop Segmented Navigation Bar */}
+          <nav className="hidden md:flex items-center gap-1 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/60 shadow-inner">
             {tabs.map((tab) => {
               const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-emerald-600 text-white shadow-xs scale-[1.02]'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 font-bold'
+                      ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                   }`}
                 >
-                  {tab.icon}
+                  <span className={isActive ? 'text-emerald-600' : 'text-slate-400'}>
+                    {tab.icon}
+                  </span>
                   <span>{tab.label}</span>
                 </button>
               );
@@ -68,56 +72,71 @@ export default function Navbar({
           </nav>
 
           {currentUser && (
-            <div className="flex items-center gap-2 sm:gap-3">
-              {/* Offline Sync Status Indicator */}
-              <SyncStatus token={token} onSyncComplete={onSyncComplete} />
+            <div className="flex items-center gap-1 sm:gap-2">
+              {/* Global Search Trigger Button */}
+              <button
+                onClick={onOpenSearch}
+                className="p-1.5 sm:px-3 sm:py-2 bg-slate-100/80 hover:bg-slate-200/80 border border-slate-200/70 rounded-xl text-slate-500 hover:text-slate-900 transition-all cursor-pointer shadow-2xs active:scale-95 flex items-center gap-1.5"
+                title="Search Batches, Clients & Records (Ctrl+K)"
+              >
+                <Search size={15} className="text-slate-500 shrink-0" />
+                <span className="text-xs font-semibold hidden lg:inline text-slate-600">Search</span>
+                <kbd className="hidden lg:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-400 bg-white border border-slate-200 rounded-md">
+                  ⌘K
+                </kbd>
+              </button>
 
-              {/* Excel & CSV Data Import Tool Icon */}
+              {/* Excel Import Button */}
               {onOpenExcelImport && (
                 <button
                   onClick={onOpenExcelImport}
-                  className="p-2.5 bg-emerald-50 border border-emerald-200/60 text-emerald-700 rounded-xl hover:bg-emerald-100 transition-all cursor-pointer flex items-center gap-1.5"
-                  title="Import Excel or CSV Farm Data"
+                  className="p-1.5 sm:px-3 sm:py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/80 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-95 flex items-center gap-1"
+                  title="Import Excel or CSV Data"
                 >
-                  <FileSpreadsheet size={16} />
-                  <span className="text-[11px] font-black uppercase tracking-wider hidden sm:inline">Import Excel</span>
+                  <span className="text-xs sm:text-sm">📥</span>
+                  <span className="hidden sm:inline">Excel</span>
                 </button>
               )}
 
-              {/* Notification Bell Icon */}
+              {/* Offline Sync Status Indicator */}
+              <SyncStatus token={token} onSyncComplete={onSyncComplete} />
+
+              {/* Notification Bell */}
               <button
                 onClick={onOpenNotifications}
-                className="relative p-2.5 bg-slate-50 border border-slate-100 text-slate-500 rounded-xl hover:bg-slate-100 hover:text-amber-600 transition-all cursor-pointer"
-                title="Open Hatchery Assistant Alerts"
+                className="relative p-1.5 sm:p-2 bg-slate-100/80 hover:bg-slate-200/80 border border-slate-200/70 text-slate-600 rounded-xl hover:text-amber-600 transition-all cursor-pointer active:scale-95"
+                title="Hatchery & Farm Reminders"
               >
-                <Bell size={16} className={unreadNotificationsCount > 0 ? "animate-bounce" : ""} />
+                <Bell size={15} className={unreadNotificationsCount > 0 ? "animate-bounce text-amber-600" : ""} />
                 {unreadNotificationsCount > 0 && (
-                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[9px] font-black uppercase text-white shadow-xs">
+                  <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-500 text-[9px] font-black text-white shadow-xs">
                     {unreadNotificationsCount}
                   </span>
                 )}
               </button>
 
-              <div className="text-right hidden xs:block">
-                <p className="text-xs font-bold text-slate-700">{currentUser.name}</p>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Operator</p>
+              {/* User Profile Pill */}
+              <div className="flex items-center gap-1 sm:gap-2 pl-0.5 sm:pl-1 sm:border-l sm:border-slate-200">
+                <div className="hidden sm:flex flex-col text-right">
+                  <span className="text-xs font-bold text-slate-800 leading-tight">{currentUser.name}</span>
+                  <span className="text-[10px] text-slate-400 font-medium">Operator</span>
+                </div>
+                <button
+                  id="logout_btn"
+                  onClick={onLogout}
+                  className="p-1.5 sm:p-2 border border-slate-200/80 rounded-xl bg-slate-100/80 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-600 text-slate-500 transition-all cursor-pointer active:scale-95"
+                  title="Sign out"
+                >
+                  <LogOut size={14} />
+                </button>
               </div>
-
-              <button
-                id="logout_btn"
-                onClick={onLogout}
-                className="p-2 border border-slate-100 rounded-xl bg-slate-50 hover:bg-rose-50 hover:text-rose-600 text-slate-500 transition-colors cursor-pointer"
-                title="Logout Security Portal"
-              >
-                <LogOut size={16} />
-              </button>
             </div>
           )}
         </div>
       </header>
 
-      {/* Fixed Bottom Navigation Bar for Mobile Flow (Hidden on MD+ Laptop screens) */}
-      <nav id="bottom_nav" className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-slate-100 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-2 pb-safe md:hidden">
+      {/* Modern High-Clarity Mobile Bottom Navigation */}
+      <nav id="bottom_nav" className="fixed bottom-0 left-0 right-0 z-50 bg-white/98 backdrop-blur-lg border-t border-slate-200/90 shadow-[0_-4px_24px_rgba(0,0,0,0.08)] px-3 pb-safe md:hidden">
         <div className="max-w-md mx-auto flex justify-between items-center h-16">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
@@ -126,20 +145,24 @@ export default function Navbar({
                 key={tab.id}
                 id={`nav_tab_${tab.id}`}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 flex flex-col justify-center items-center h-full gap-0.5 transition-all outline-none cursor-pointer ${
+                className={`flex-1 flex flex-col justify-center items-center h-full min-h-[48px] gap-1 transition-all outline-none cursor-pointer select-none active:scale-95 ${
                   isActive
-                    ? 'text-emerald-600 scale-105 font-bold'
-                    : 'text-slate-400 hover:text-slate-600 font-medium'
+                    ? 'text-emerald-800 font-extrabold'
+                    : 'text-slate-400 hover:text-slate-700 font-bold'
                 }`}
               >
                 <div
-                  className={`p-1.5 rounded-xl transition-all ${
-                    isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-transparent'
+                  className={`py-1 px-4 rounded-xl transition-all ${
+                    isActive
+                      ? 'bg-emerald-100 text-emerald-800 shadow-2xs'
+                      : 'bg-transparent text-slate-500'
                   }`}
                 >
                   {tab.icon}
                 </div>
-                <span className="text-xs tracking-tight">{tab.label}</span>
+                <span className={`text-[11px] tracking-tight ${isActive ? 'font-black text-emerald-900' : 'font-semibold text-slate-500'}`}>
+                  {tab.label}
+                </span>
               </button>
             );
           })}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, BellOff, X, Phone, MessageSquare, ArrowRight, CheckCircle2, ShieldAlert, Egg } from 'lucide-react';
 import { IncubatorRecord, DailyEggCollection } from '../types';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface NotificationHubProps {
   db: {
@@ -51,7 +52,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
         id: `egg-alert-${todayStr}`,
         type: 'eggCollection',
         title: '🥚 6:00 PM Daily Egg Collection Alert!',
-        description: `Daily farm egg collection for today (${todayStr}) has not been logged yet. Please enter Brahma & Turkey egg counts.`,
+        description: `Daily farm egg collection for today (${formatDateDDMMYYYY(todayStr)}) has not been logged yet. Please enter Brahma & Turkey egg counts.`,
         expectedDate: todayStr
       });
     }
@@ -252,7 +253,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
                           </span>
                           <h4 className="text-sm font-black text-slate-900 leading-tight mt-1">{reminder.title}</h4>
                         </div>
-                        <span className="text-[11px] font-bold text-orange-600 whitespace-nowrap">{reminder.expectedDate}</span>
+                        <span className="text-[11px] font-bold text-orange-600 whitespace-nowrap">{formatDateDDMMYYYY(reminder.expectedDate)}</span>
                       </div>
 
                       <p className="text-xs text-slate-700 font-medium leading-relaxed">
@@ -299,7 +300,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
                         </span>
                         <h4 className="text-sm font-black text-slate-800 leading-tight mt-1">{reminder.title}</h4>
                       </div>
-                      <span className="text-[11px] font-bold text-slate-400 whitespace-nowrap">{reminder.expectedDate}</span>
+                      <span className="text-[11px] font-bold text-slate-400 whitespace-nowrap">{formatDateDDMMYYYY(reminder.expectedDate)}</span>
                     </div>
 
                     <p className="text-xs text-slate-600 font-medium leading-relaxed leading-3">

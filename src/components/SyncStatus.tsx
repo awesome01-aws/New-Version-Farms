@@ -107,7 +107,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
       <div className="flex items-center gap-2">
         <button
           onClick={() => setShowDetails(!showDetails)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all border shadow-sm ${
+          className={`flex items-center gap-1 sm:gap-1.5 px-2 py-1.5 sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold transition-all border shadow-sm ${
             !isOnline
               ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
               : pendingQueue.length > 0
@@ -142,21 +142,19 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
               : 'Online'}
           </span>
 
-          <span className="sm:hidden">
-            {!isOnline ? 'Offline' : pendingQueue.length > 0 ? `${pendingQueue.length}` : 'Online'}
-          </span>
-
           {pendingQueue.length > 0 && (
-            <span className="ml-0.5 bg-blue-600 text-white text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+            <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.2 rounded-full font-bold">
               {pendingQueue.length}
             </span>
           )}
 
-          {showDetails ? (
-            <ChevronUp className="w-3 h-3 text-slate-500" />
-          ) : (
-            <ChevronDown className="w-3 h-3 text-slate-500" />
-          )}
+          <span className="hidden sm:inline-block">
+            {showDetails ? (
+              <ChevronUp className="w-3 h-3 text-slate-500" />
+            ) : (
+              <ChevronDown className="w-3 h-3 text-slate-500" />
+            )}
+          </span>
         </button>
       </div>
 

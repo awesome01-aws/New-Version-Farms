@@ -12,6 +12,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
+import { formatDateDDMMYYYY, formatDateShortDDMM, formatFlockAge } from '../utils/dateUtils';
 
 export type PdfPeriod = '1_week' | '2_weeks' | '1_month' | '6_months' | '1_year' | 'all_time';
 export type PdfScope = 'all' | 'farm' | 'incubator';
@@ -110,7 +111,7 @@ export function generatePdfReport(
   doc.setTextColor(204, 251, 241); // Teal 100
   doc.text('BRAHMA EGG HATCHERY & POULTRY MANAGEMENT PORTAL', 14, 17);
 
-  const reportDateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  const reportDateStr = formatDateDDMMYYYY(new Date());
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.text(`Generated: ${reportDateStr}`, pageWidth - 14, 14, { align: 'right' });
@@ -281,7 +282,7 @@ export function generatePdfReport(
       r.clientMark || 'XX',
       r.clientName || 'Unregistered',
       r.eggType || 'Brahma',
-      r.dateBrought || '',
+      formatDateDDMMYYYY(r.dateBrought),
       r.eggsCollected || 0,
       `${(r.amountDue || 0).toLocaleString()} FCFA`,
       `${(r.amountPaid || 0).toLocaleString()} FCFA`,
@@ -319,7 +320,7 @@ export function generatePdfReport(
         f.name,
         f.species || 'Chicken',
         f.breed,
-        `${f.ageWeeks} wks`,
+        formatFlockAge(f.dateAdded, f.initialAgeWeeks ?? 0),
         `${f.quantity} birds`,
         `${mortQty} birds lost`
       ];
@@ -350,7 +351,7 @@ export function generatePdfReport(
     y += 3;
 
     const salesRows = poultrySales.map(s => [
-      s.date,
+      formatDateDDMMYYYY(s.date),
       s.itemType,
       s.buyerName,
       s.quantity,
@@ -383,14 +384,14 @@ export function generatePdfReport(
     y += 3;
 
     const feedRows = feedRecs.map(f => [
-      f.date,
+      formatDateDDMMYYYY(f.date),
       'Feed Purchase',
       `${f.feedType} (${f.bagsBought} bags @ ${f.costBag.toLocaleString()} FCFA)`,
       `${f.totalCost.toLocaleString()} FCFA`
     ]);
 
     const otherExpRows = expenseRecs.map(e => [
-      e.date,
+      formatDateDDMMYYYY(e.date),
       e.category,
       e.description,
       `${e.amount.toLocaleString()} FCFA`
@@ -480,7 +481,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
     for (let i = 29; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
-      const displayDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const displayDate = formatDateShortDDMM(d);
 
       const dayRecords = db.mortality.filter(m => m.date === dateStr);
       const totalQty = dayRecords.reduce((acc, m) => acc + (m.quantity || 0), 0);
@@ -678,7 +679,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-1">
+          <div className="grid grid-cols-1 landscape:grid-cols-3 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-1">
             {/* Period Dropdown */}
             <div className="bg-white/10 backdrop-blur-md p-3 rounded-2xl border border-white/10 space-y-1">
               <label className="text-[10px] font-extrabold text-teal-300 uppercase tracking-wider block">
@@ -874,67 +875,6 @@ export default function ReportsMod({ db }: ReportsModProps) {
             </span>
           </div>
         )}
-      </div>
-
-      {/* OUTSTANDING PAYMENTS (200 FCFA per egg module backlog) */}
-      <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-base font-black text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
-              <DollarSign size={16} className="text-rose-600" />
-              Outstanding Client Balances
-            </h3>
-            <p className="text-slate-400 text-xs font-semibold">Remind clients with unpaid incubator batches</p>
-          </div>
-          <span className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2.5 py-0.5 rounded-full">
-            {outstandingList.length} Pending
-          </span>
-        </div>
-
-        <div className="overflow-x-auto rounded-xl border border-rose-50">
-          <table className="w-full border-collapse text-left min-w-[500px]">
-            <thead className="bg-rose-50/50 text-xs font-extrabold text-slate-500 uppercase tracking-wider">
-              <tr>
-                <th className="p-3">Client (Mark)</th>
-                <th className="p-3">Brought Date</th>
-                <th className="p-3 text-right">Job Cost</th>
-                <th className="p-3 text-right">Owed Balance</th>
-                <th className="p-3 text-center">Inquire (WhatsApp)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 font-bold text-slate-700 text-sm">
-              {outstandingList.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="p-4 text-center text-slate-400 font-semibold bg-slate-50/30">
-                    🎉 Excellent! All client incubator balances are fully cleared.
-                  </td>
-                </tr>
-              ) : (
-                outstandingList.map((client) => (
-                  <tr key={client.id} className="hover:bg-slate-50/40">
-                    <td className="p-3 text-slate-900 font-extrabold flex flex-col">
-                      <span>{client.clientName}</span>
-                      <span className="text-xs font-black text-emerald-800 uppercase tracking-wider mt-0.5">[{client.clientMark}]</span>
-                    </td>
-                    <td className="p-3 text-xs text-slate-500 font-mono">{client.datePlaced}</td>
-                    <td className="p-3 text-right text-slate-500 text-xs">{client.totalAmount.toLocaleString()} FCFA</td>
-                    <td className="p-3 text-right text-rose-700 font-black">{client.amountDue.toLocaleString()} FCFA</td>
-                    <td className="p-3 text-center">
-                      <button
-                        id={`remind_wa_${client.id}`}
-                        onClick={() => triggerWhatsAppReminder(client)}
-                        className="bg-rose-50 hover:bg-rose-100 border border-rose-100 text-rose-700 rounded-xl px-2.5 py-1.5 text-xs font-bold inline-flex items-center gap-1.5 transition-all cursor-pointer"
-                      >
-                        <MessageSquare size={13} />
-                        <span>Remind</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
       </div>
 
       {/* TOP CLIENTS ALL TIME PERFORMANCE CHART */}

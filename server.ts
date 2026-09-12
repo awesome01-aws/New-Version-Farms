@@ -167,30 +167,43 @@ function parseExcelFlocksAndAllocations() {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-    const todayStr = "2026-08-03";
-    const today = new Date(todayStr);
+    const today = new Date();
+    const todayStr = today.toISOString().split("T")[0];
 
     const parseDateOrAge = (val: any) => {
-      if (!val) return { ageWeeks: 0, hatchDate: todayStr };
+      if (!val) return { ageWeeks: 0, initialAgeWeeks: 0, hatchDate: todayStr };
       const s = String(val).trim().toUpperCase();
       if (s.includes("WEEK") || s.includes("WK")) {
-        const m = s.match(/(\d+)/);
-        const wks = m ? parseInt(m[1], 10) : 0;
-        const d = new Date(todayStr);
+        const m = s.match(/(\d+(?:\.\d+)?)/);
+        const wks = m ? parseFloat(m[1]) : 0;
+        const d = new Date();
         d.setDate(d.getDate() - wks * 7);
-        return { ageWeeks: wks, hatchDate: d.toISOString().split("T")[0] };
+        const hatchStr = d.toISOString().split("T")[0];
+        return { ageWeeks: wks, initialAgeWeeks: wks, hatchDate: hatchStr };
       }
       const parts = s.split("/");
       if (parts.length === 2) {
         const day = parseInt(parts[0], 10);
         const month = parseInt(parts[1], 10);
         const hatchStr = `2026-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-        const hatchDateObj = new Date(hatchStr);
-        const diffDays = Math.max(0, (today.getTime() - hatchDateObj.getTime()) / (1000 * 3600 * 24));
-        const ageWeeks = Math.round((diffDays / 7) * 10) / 10;
-        return { ageWeeks, hatchDate: hatchStr };
+        return { ageWeeks: 0, initialAgeWeeks: 0, hatchDate: hatchStr };
       }
-      return { ageWeeks: 0, hatchDate: todayStr };
+      if (parts.length === 3) {
+        let day = parseInt(parts[0], 10);
+        let month = parseInt(parts[1], 10);
+        const year = parseInt(parts[2], 10);
+        if (month > 12 && day <= 12) {
+          const tmp = day; day = month; month = tmp;
+        }
+        const hatchStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        return { ageWeeks: 0, initialAgeWeeks: 0, hatchDate: hatchStr };
+      }
+      const numMatch = s.match(/(\d+(?:\.\d+)?)/);
+      if (numMatch) {
+        const wks = parseFloat(numMatch[1]);
+        return { ageWeeks: wks, initialAgeWeeks: wks, hatchDate: todayStr };
+      }
+      return { ageWeeks: 0, initialAgeWeeks: 0, hatchDate: todayStr };
     };
 
     const parseQuantity = (qtyRaw: any) => {
@@ -346,17 +359,32 @@ const getInitialDb = () => {
 // Seed/Load database
 function updateFlocksAge(db: any) {
   if (!db.flocks || !Array.isArray(db.flocks)) return;
-  const today = new Date("2026-08-03");
+  const today = new Date();
   let changed = false;
 
   db.flocks.forEach((flock: any) => {
-    if (flock.hatchDate) {
-      const hatch = new Date(flock.hatchDate);
+    if (flock.initialAgeWeeks !== undefined && flock.initialAgeWeeks % 1 !== 0) {
+      flock.initialAgeWeeks = 0;
+      changed = true;
+    }
+    const hatchStr = flock.dateAdded || flock.hatchDate;
+    if (hatchStr) {
+      let iso = hatchStr;
+      if (hatchStr.includes("/")) {
+        const parts = hatchStr.split("/");
+        if (parts.length === 3) {
+          iso = `${parts[2]}-${String(parts[1]).padStart(2, "0")}-${String(parts[0]).padStart(2, "0")}`;
+        }
+      }
+      const hatch = new Date(iso);
       if (!isNaN(hatch.getTime())) {
         const diffTime = Math.max(0, today.getTime() - hatch.getTime());
-        const ageWeeks = Math.round((diffTime / (1000 * 3600 * 24 * 7)) * 10) / 10;
-        if (flock.ageWeeks !== ageWeeks) {
-          flock.ageWeeks = ageWeeks;
+        const elapsedWeeks = diffTime / (1000 * 3600 * 24 * 7);
+        let baseAge = flock.initialAgeWeeks !== undefined ? Number(flock.initialAgeWeeks) : 0;
+        if (baseAge % 1 !== 0) baseAge = 0;
+        const computed = Math.round((baseAge + elapsedWeeks) * 10) / 10;
+        if (flock.ageWeeks !== computed) {
+          flock.ageWeeks = computed;
           changed = true;
         }
       }
@@ -364,11 +392,7 @@ function updateFlocksAge(db: any) {
   });
 
   if (changed) {
-    try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), "utf-8");
-    } catch (e) {
-      console.error("Failed to persist automated flock age update:", e);
-    }
+    saveDbLocalFileOnly(db);
   }
 }
 
@@ -478,9 +502,100 @@ function isValidPositiveNumber(val: any): boolean {
   return !isNaN(num) && isFinite(num) && num > 0;
 }
 
+// Helper to normalize any date input (DD/MM/YYYY, D/M/YYYY, etc.) to ISO YYYY-MM-DD
+export function normalizeDateStringToISO(val: any): string {
+  if (val === null || val === undefined || val === '') {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  const str = String(val).trim();
+
+  // If already YYYY-MM-DD or YYYY-M-D
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(str)) {
+    const parts = str.split('-');
+    return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+  }
+
+  // Handle formatted dates like D/M/YYYY, DD/MM/YYYY, D-M-YYYY, DD.MM.YYYY
+  const cleaned = str.replace(/[\/\.]/g, '-');
+  const parts = cleaned.split('-');
+  if (parts.length === 3) {
+    const p1 = parts[0].trim();
+    const p2 = parts[1].trim();
+    const p3 = parts[2].trim();
+
+    // D/M/YYYY or DD/MM/YYYY or M/D/YYYY
+    if (p3.length === 4) {
+      const year = p3;
+      let day = p1.padStart(2, '0');
+      let month = p2.padStart(2, '0');
+
+      // Standard in Cameroon / UK / International format is DD/MM/YYYY (Day/Month/Year).
+      // If p2 > 12 and p1 <= 12, p2 must be the Day, and p1 the Month (MM/DD/YYYY)
+      if (Number(p2) > 12 && Number(p1) <= 12) {
+        day = p2.padStart(2, '0');
+        month = p1.padStart(2, '0');
+      } else {
+        // Default to DD/MM/YYYY (Day/Month/Year)
+        day = p1.padStart(2, '0');
+        month = p2.padStart(2, '0');
+      }
+
+      return `${year}-${month}-${day}`;
+    }
+
+    // YYYY/MM/DD or YYYY/M/D
+    if (p1.length === 4) {
+      const year = p1;
+      const month = p2.padStart(2, '0');
+      const day = p3.padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    // D/M/YY or DD/MM/YY
+    if (p3.length === 2) {
+      const year = Number(p3) < 50 ? `20${p3}` : `19${p3}`;
+      let day = p1.padStart(2, '0');
+      let month = p2.padStart(2, '0');
+      if (Number(p2) > 12 && Number(p1) <= 12) {
+        day = p2.padStart(2, '0');
+        month = p1.padStart(2, '0');
+      }
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  return new Date().toISOString().split('T')[0];
+}
+
+// Helper to determine standard incubator pricing based on egg species
+export function getStandardRateBySpecies(eggType?: string): number {
+  const t = String(eggType || '').toLowerCase().trim();
+  if (t.includes('quail') || t.includes('cailles') || t.includes('caille')) {
+    return 100;
+  }
+  if (
+    t.includes('turkey') || t.includes('dindon') || t.includes('dinde') ||
+    t.includes('duck') || t.includes('canard') ||
+    t.includes('goose') || t.includes('oie')
+  ) {
+    return 500;
+  }
+  return 200;
+}
+
 // Helper for Incubator Batch Amount Due Calculations
 export const computeAmountDue = (record: {
   specialCase?: string;
+  eggType?: string;
   eggsCollected?: number;
   ratePerEgg?: number;
   customRate?: number;
@@ -488,7 +603,8 @@ export const computeAmountDue = (record: {
   chicksHatched?: number | null;
 }): { rate: number; amountDue: number } => {
   const sc = String(record.specialCase || 'Standard').trim();
-  let rate = 200;
+  const stdRate = getStandardRateBySpecies(record.eggType);
+  let rate = stdRate;
 
   if (sc === '150 Per Egg Brought' || sc === 'Discount') {
     rate = 150;
@@ -497,17 +613,19 @@ export const computeAmountDue = (record: {
   } else if (sc === 'Custom') {
     if (record.customRate !== undefined && record.customRate !== null && isValidNonNegativeNumber(record.customRate) && Number(record.customRate) > 0) {
       rate = Number(record.customRate);
-    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && isValidNonNegativeNumber(record.ratePerEgg) && Number(record.ratePerEgg) > 0 && Number(record.ratePerEgg) !== 200 && Number(record.ratePerEgg) !== 150) {
+    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && isValidNonNegativeNumber(record.ratePerEgg) && Number(record.ratePerEgg) > 0) {
       rate = Number(record.ratePerEgg);
     } else {
-      rate = 200;
+      rate = stdRate;
     }
   } else {
-    // Standard, Per Chick, Per Egg After Scan: standard default rate is 200 FCFA
+    // Standard, Per Chick, Per Egg After Scan
     if (record.customRate !== undefined && record.customRate !== null && isValidNonNegativeNumber(record.customRate) && Number(record.customRate) > 0) {
       rate = Number(record.customRate);
+    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && isValidNonNegativeNumber(record.ratePerEgg) && Number(record.ratePerEgg) > 0 && record.ratePerEgg !== 200 && record.ratePerEgg !== 150 && record.ratePerEgg !== 500 && record.ratePerEgg !== 100) {
+      rate = Number(record.ratePerEgg);
     } else {
-      rate = 200;
+      rate = stdRate;
     }
   }
 
@@ -536,117 +654,140 @@ export const computeAmountDue = (record: {
   return { rate, amountDue: eggs * rate };
 };
 
+let cachedDb: any = null;
+let firestoreSyncTimer: NodeJS.Timeout | null = null;
+
 function loadDb(): any {
+  if (cachedDb) {
+    return cachedDb;
+  }
+
   if (!fs.existsSync(DB_FILE)) {
     const initial = getInitialDb();
     const tmpFile = DB_FILE + ".tmp";
-    fs.writeFileSync(tmpFile, JSON.stringify(initial, null, 2), "utf-8");
-    fs.renameSync(tmpFile, DB_FILE);
+    try {
+      fs.writeFileSync(tmpFile, JSON.stringify(initial, null, 2), "utf-8");
+      fs.renameSync(tmpFile, DB_FILE);
+    } catch (_) {}
+    cachedDb = initial;
+  } else {
+    try {
+      const content = fs.readFileSync(DB_FILE, "utf-8");
+      cachedDb = JSON.parse(content);
+    } catch (err) {
+      console.error("Failed to parse database file, returning initial state:", err);
+      cachedDb = getInitialDb();
+    }
   }
-  try {
-    const content = fs.readFileSync(DB_FILE, "utf-8");
-    const db = JSON.parse(content);
-    
-    // Defensively ensure all database collections are arrays
-    if (!Array.isArray(db.users)) db.users = [];
-    if (!Array.isArray(db.clients)) db.clients = [];
-    if (!Array.isArray(db.incubator_records)) db.incubator_records = [];
-    if (!Array.isArray(db.flocks)) db.flocks = [];
-    if (!Array.isArray(db.feed_records)) db.feed_records = [];
-    if (!Array.isArray(db.poultry_sales)) db.poultry_sales = [];
-    if (!Array.isArray(db.mortality)) db.mortality = [];
-    if (!Array.isArray(db.expenses)) db.expenses = [];
-    if (!Array.isArray(db.cage_transfers)) db.cage_transfers = [];
-    if (!Array.isArray(db.daily_egg_collections)) db.daily_egg_collections = [];
-    if (!Array.isArray(db.fowls_eaten)) db.fowls_eaten = [];
 
-    // Ensure flocks & allocations are populated from Excel if empty
-    const isOutdatedOrCorrupted = !db.flocks || !Array.isArray(db.flocks) || db.flocks.length === 0;
-    if (isOutdatedOrCorrupted) {
-      console.log("[Database Engine] Clearing corrupted/outdated flocks state and re-seeding from Excel...");
-      const initial = getInitialDb();
-      db.flocks = initial.flocks;
-      db.cage_allocations = initial.cage_allocations;
-      db.cages = initial.cages;
-    }
+  const db = cachedDb;
 
-    // Auto sanitize any legacy text misuse where flock.name or alloc.flockName is raw text like "7 cocks+1hen" or "7 turkey + 2 chicks"
-    if (Array.isArray(db.flocks)) {
-      db.flocks.forEach((flock: any, idx: number) => {
-        sanitizeFlockOrAlloc(flock, idx);
-      });
-    }
-    if (Array.isArray(db.cage_allocations)) {
-      db.cage_allocations.forEach((alloc: any, idx: number) => {
-        sanitizeFlockOrAlloc(alloc, idx);
-      });
-    }
+  // Defensively ensure all database collections are arrays
+  if (!Array.isArray(db.users)) db.users = [];
+  if (!Array.isArray(db.clients)) db.clients = [];
+  if (!Array.isArray(db.incubator_records)) db.incubator_records = [];
+  if (!Array.isArray(db.flocks)) db.flocks = [];
+  if (!Array.isArray(db.feed_records)) db.feed_records = [];
+  if (!Array.isArray(db.poultry_sales)) db.poultry_sales = [];
+  if (!Array.isArray(db.mortality)) db.mortality = [];
+  if (!Array.isArray(db.expenses)) db.expenses = [];
+  if (!Array.isArray(db.cage_transfers)) db.cage_transfers = [];
+  if (!Array.isArray(db.daily_egg_collections)) db.daily_egg_collections = [];
+  if (!Array.isArray(db.fowls_eaten)) db.fowls_eaten = [];
 
-    // Ensure incubator records calculations are sanitized and 100% accurate
-    let needsSave = false;
-    if (Array.isArray(db.incubator_records) && Array.isArray(db.clients)) {
-      db.incubator_records.forEach((r: any) => {
-        const client = db.clients.find((c: any) => c.id === r.clientId);
-        if (client && client.specialCase && (!r.specialCase || r.specialCase === 'Standard')) {
-          r.specialCase = client.specialCase;
-          needsSave = true;
-        }
-        const computed = computeAmountDue(r);
-        if (r.ratePerEgg !== computed.rate || r.amountDue !== computed.amountDue) {
-          r.ratePerEgg = computed.rate;
-          r.amountDue = computed.amountDue;
-          needsSave = true;
-        }
-      });
-    }
+  // Ensure flocks & allocations are populated from Excel if empty
+  const isOutdatedOrCorrupted = !db.flocks || !Array.isArray(db.flocks) || db.flocks.length === 0;
+  if (isOutdatedOrCorrupted) {
+    console.log("[Database Engine] Clearing corrupted/outdated flocks state and re-seeding from Excel...");
+    const initial = getInitialDb();
+    db.flocks = initial.flocks;
+    db.cage_allocations = initial.cage_allocations;
+    db.cages = initial.cages;
+  }
 
-    if (needsSave) {
-      saveDb(db);
-    }
+  // Auto sanitize any legacy text misuse where flock.name or alloc.flockName is raw text like "7 cocks+1hen" or "7 turkey + 2 chicks"
+  if (Array.isArray(db.flocks)) {
+    db.flocks.forEach((flock: any, idx: number) => {
+      sanitizeFlockOrAlloc(flock, idx);
+    });
+  }
+  if (Array.isArray(db.cage_allocations)) {
+    db.cage_allocations.forEach((alloc: any, idx: number) => {
+      sanitizeFlockOrAlloc(alloc, idx);
+    });
+  }
 
-    // Ensure cages list is initialized if missing
-    if (!db.cages || !Array.isArray(db.cages)) {
-      db.cages = [...DEFAULT_CAGES];
-    }
-
-    // Ensure cage allocations list is initialized
-    if (!db.cage_allocations || !Array.isArray(db.cage_allocations) || db.cage_allocations.length === 0) {
-      db.cage_allocations = [];
-      if (db.flocks && db.flocks.length > 0) {
-        db.flocks.forEach((flock: any) => {
-          if (flock.quantity > 0) {
-            const cName = (flock.notes || "").replace(/\s*\(.*\)/g, "").trim() || "ST 1";
-            const bName = findBlockNameForCage(cName, db.cages);
-            db.cage_allocations.push({
-              id: crypto.randomUUID(),
-              blockName: bName,
-              cageName: cName,
-              flockName: flock.name,
-              species: flock.species || "Chicken",
-              quantity: flock.quantity,
-              ageWeeks: flock.ageWeeks || 0,
-              dateAdded: flock.dateAdded || new Date().toISOString().split("T")[0],
-              dateTransferred: flock.dateAdded || new Date().toISOString().split("T")[0],
-              notes: flock.notes || ""
-            });
-          }
-        });
+  // Ensure incubator records calculations are sanitized and 100% accurate
+  let needsSave = false;
+  if (Array.isArray(db.incubator_records) && Array.isArray(db.clients)) {
+    db.incubator_records.forEach((r: any) => {
+      const client = db.clients.find((c: any) => c.id === r.clientId);
+      if (client && client.specialCase && (!r.specialCase || r.specialCase === 'Standard')) {
+        r.specialCase = client.specialCase;
+        needsSave = true;
       }
-    }
-
-    updateFlocksAge(db);
-    return db;
-  } catch (err) {
-    console.error("Failed to parse database file, returning initial state:", err);
-    return getInitialDb();
+      const computed = computeAmountDue(r);
+      if (r.ratePerEgg !== computed.rate || r.amountDue !== computed.amountDue) {
+        r.ratePerEgg = computed.rate;
+        r.amountDue = computed.amountDue;
+        needsSave = true;
+      }
+    });
   }
+
+  // Ensure cages list is initialized if missing
+  if (!db.cages || !Array.isArray(db.cages)) {
+    db.cages = [...DEFAULT_CAGES];
+  }
+
+  // Ensure cage allocations list is initialized
+  if (!db.cage_allocations || !Array.isArray(db.cage_allocations) || db.cage_allocations.length === 0) {
+    db.cage_allocations = [];
+    if (db.flocks && db.flocks.length > 0) {
+      db.flocks.forEach((flock: any) => {
+        if (flock.quantity > 0) {
+          const cName = (flock.notes || "").replace(/\s*\(.*\)/g, "").trim() || "ST 1";
+          const bName = findBlockNameForCage(cName, db.cages);
+          db.cage_allocations.push({
+            id: crypto.randomUUID(),
+            blockName: bName,
+            cageName: cName,
+            flockName: flock.name,
+            species: flock.species || "Chicken",
+            quantity: flock.quantity,
+            ageWeeks: flock.ageWeeks || 0,
+            dateAdded: flock.dateAdded || new Date().toISOString().split("T")[0],
+            dateTransferred: flock.dateAdded || new Date().toISOString().split("T")[0],
+            notes: flock.notes || ""
+          });
+        }
+      });
+    }
+  }
+
+  updateFlocksAge(db);
+  cachedDb = db;
+
+  if (needsSave) {
+    saveDb(db);
+  }
+
+  return cachedDb;
 }
 
+let dbVersion = Date.now();
+
 function saveDbLocalFileOnly(data: any) {
+  cachedDb = data;
+  dbVersion = Date.now();
+  const tmpFile = DB_FILE + ".tmp";
   try {
-    const tmpFile = DB_FILE + ".tmp";
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf-8");
-    fs.renameSync(tmpFile, DB_FILE);
+    const json = JSON.stringify(data);
+    fs.writeFile(tmpFile, json, "utf-8", (err) => {
+      if (!err) {
+        fs.rename(tmpFile, DB_FILE, () => {});
+      }
+    });
   } catch (err) {
     console.error("Failed to safely persist local database file:", err);
   }
@@ -692,6 +833,7 @@ async function syncFromFirestoreOnBoot() {
       const cloudData: any = docSnap.data();
       if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length > 0) {
         console.log("[Firebase Cloud Firestore] Hydrated database snapshot from Cloud Firestore!");
+        cachedDb = cloudData;
         saveDbLocalFileOnly(cloudData);
       }
     }
@@ -709,12 +851,21 @@ async function syncFromFirestoreOnBoot() {
 // Initial hydration from Cloud Firestore
 syncFromFirestoreOnBoot().catch(() => {});
 
-function saveDb(data: any) {
-  saveDbLocalFileOnly(data);
-  // Asynchronously push update to Firebase Cloud Firestore
-  if (!firestoreQuotaExhausted) {
-    syncToFirestore(data).catch(() => {});
+function scheduleFirestoreSync(data: any) {
+  if (!firestoreDb || firestoreQuotaExhausted) return;
+  if (firestoreSyncTimer) {
+    clearTimeout(firestoreSyncTimer);
   }
+  firestoreSyncTimer = setTimeout(() => {
+    firestoreSyncTimer = null;
+    syncToFirestore(data).catch(() => {});
+  }, 1000);
+}
+
+function saveDb(data: any) {
+  cachedDb = data;
+  saveDbLocalFileOnly(data);
+  scheduleFirestoreSync(data);
 }
 
 function syncFlockWithAllRelatedTables(db: any, flock: any, oldName?: string) {
@@ -881,17 +1032,58 @@ async function startServer() {
   // Fetch full data snapshot
   app.get("/api/data", requireAuth, (req, res) => {
     const db = loadDb();
+
+    // Fast single-pass client stats calculation O(N + M)
+    const clientStatsMap: Record<string, { totalDue: number; totalOverdraftUsed: number; totalPaid: number }> = {};
+    if (Array.isArray(db.incubator_records)) {
+      db.incubator_records.forEach((r: any) => {
+        if (!r || !r.clientId) return;
+        if (!clientStatsMap[r.clientId]) {
+          clientStatsMap[r.clientId] = { totalDue: 0, totalOverdraftUsed: 0, totalPaid: 0 };
+        }
+        const entry = clientStatsMap[r.clientId];
+        entry.totalDue += (Number(r.amountDue) || 0);
+        entry.totalOverdraftUsed += (Number(r.overdraftUsed) || 0);
+        entry.totalPaid += (Number(r.amountPaid) || 0);
+      });
+    }
+
+    let dbChanged = false;
+    if (Array.isArray(db.clients)) {
+      db.clients.forEach((c: any) => {
+        const stats = clientStatsMap[c.id] || { totalDue: 0, totalOverdraftUsed: 0, totalPaid: 0 };
+        const netDue = Math.max(0, stats.totalDue - stats.totalOverdraftUsed);
+        const calculatedOverdraft = stats.totalPaid > netDue ? (stats.totalPaid - netDue) : 0;
+
+        if (c.overdraft !== calculatedOverdraft) {
+          c.overdraft = calculatedOverdraft;
+          dbChanged = true;
+        }
+      });
+    }
+
+    if (dbChanged) {
+      saveDb(db);
+    }
+
+    const etag = `W/"v${dbVersion}"`;
+    res.setHeader('ETag', etag);
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+
     // Exclude security hashes
-    const safeUsers = db.users.map((u: any) => ({ id: u.id, username: u.username, name: u.name }));
+    const safeUsers = (db.users || []).map((u: any) => ({ id: u.id, username: u.username, name: u.name }));
     res.json({
       users: safeUsers,
-      clients: db.clients,
-      incubator_records: db.incubator_records,
-      flocks: db.flocks,
-      feed_records: db.feed_records,
-      poultry_sales: db.poultry_sales,
-      mortality: db.mortality,
-      expenses: db.expenses,
+      clients: db.clients || [],
+      incubator_records: db.incubator_records || [],
+      flocks: db.flocks || [],
+      feed_records: db.feed_records || [],
+      poultry_sales: db.poultry_sales || [],
+      mortality: db.mortality || [],
+      expenses: db.expenses || [],
       cage_transfers: db.cage_transfers || [],
       cages: db.cages || [],
       cage_allocations: db.cage_allocations || [],
@@ -1813,6 +2005,7 @@ function calculateCurrentAgeWeeks(
 
     // 4. Optionally update flock notes location if flockId matches
     if (flockId) {
+      if (!db.flocks) db.flocks = [];
       const fl = db.flocks.find((f: any) => f.id === flockId);
       if (fl) {
         fl.notes = cleanToCage;
@@ -1975,8 +2168,8 @@ function calculateCurrentAgeWeeks(
     const db = loadDb();
     const { id, name, mark, phone, location, overdraft, specialCase } = req.body;
 
-    if (!name || !mark || !phone || !location) {
-      return res.status(400).json({ error: "All client registration fields are required." });
+    if (!name || !mark || !phone) {
+      return res.status(400).json({ error: "Client name, mark, and phone are required." });
     }
 
     if (overdraft !== undefined && !isValidNonNegativeNumber(overdraft)) {
@@ -1989,13 +2182,18 @@ function calculateCurrentAgeWeeks(
     }
 
     const clientId = id || crypto.randomUUID();
-    let existingClient = db.clients.find((c: any) => c.id === clientId || c.mark === cleanedMark);
+    const duplicate = db.clients.find((c: any) => c.mark === cleanedMark && c.id !== clientId);
+    if (duplicate) {
+      return res.status(400).json({ error: `Client mark [${cleanedMark}] is already assigned to ${duplicate.name}. Client marks must be unique.` });
+    }
+
+    let existingClient = db.clients.find((c: any) => c.id === clientId);
 
     if (existingClient) {
       existingClient.name = String(name).trim();
       existingClient.mark = cleanedMark;
       existingClient.phone = String(phone).trim();
-      existingClient.location = String(location).trim();
+      existingClient.location = location ? String(location).trim() : (existingClient.location || "");
       if (specialCase) existingClient.specialCase = String(specialCase);
       if (overdraft !== undefined) existingClient.overdraft = Math.max(0, Number(overdraft) || 0);
       saveDb(db);
@@ -2007,7 +2205,7 @@ function calculateCurrentAgeWeeks(
       name: String(name).trim(),
       mark: cleanedMark,
       phone: String(phone).trim(),
-      location: String(location).trim(),
+      location: location ? String(location).trim() : "",
       specialCase: specialCase ? String(specialCase) : 'Standard',
       overdraft: Math.max(0, Number(overdraft) || 0)
     };
@@ -2024,11 +2222,21 @@ function calculateCurrentAgeWeeks(
     const clientIndex = db.clients.findIndex((c: any) => c.id === id);
     if (clientIndex === -1) return res.status(404).json({ error: "Client not found." });
 
-    const { name, phone, location, overdraft, specialCase, scope } = req.body;
+    const { name, mark, phone, location, overdraft, specialCase, scope } = req.body;
     const client = db.clients[clientIndex];
+    const oldMark = client.mark;
 
     if (overdraft !== undefined && !isValidNonNegativeNumber(overdraft)) {
       return res.status(400).json({ error: "Client overdraft credit must be a valid non-negative number." });
+    }
+
+    if (mark !== undefined && String(mark).trim() !== "") {
+      const cleanedMark = String(mark).trim().toUpperCase();
+      const duplicate = db.clients.find((c: any) => c.mark === cleanedMark && c.id !== id);
+      if (duplicate) {
+        return res.status(400).json({ error: `Client mark [${cleanedMark}] is already assigned to ${duplicate.name}. Client marks must be unique.` });
+      }
+      client.mark = cleanedMark;
     }
 
     if (name !== undefined) client.name = String(name).trim();
@@ -2053,13 +2261,24 @@ function calculateCurrentAgeWeeks(
 
     db.clients[clientIndex] = client;
 
-    // Sync clientName and clientPhone in incubator records
+    // Sync clientName, clientMark and clientPhone in incubator records
     db.incubator_records.forEach((r: any) => {
-      if (r.clientId === id) {
+      if (r.clientId === id || (oldMark && r.clientMark === oldMark && r.clientName === client.name)) {
+        if (client.mark) r.clientMark = client.mark;
         if (name !== undefined) r.clientName = String(name).trim();
         if (phone !== undefined) r.clientPhone = String(phone).trim();
       }
     });
+
+    // Re-calculate client overdraft cleanly from total cash paid vs net amount due
+    const clientRecords = db.incubator_records.filter((r: any) => r.clientId === id);
+    const totalDue = clientRecords.reduce((acc: number, r: any) => acc + (r.amountDue || 0), 0);
+    const totalOverdraftUsed = clientRecords.reduce((acc: number, r: any) => acc + (r.overdraftUsed || 0), 0);
+    const totalPaid = clientRecords.reduce((acc: number, r: any) => acc + (r.amountPaid || 0), 0);
+    const netDue = Math.max(0, totalDue - totalOverdraftUsed);
+    client.overdraft = totalPaid > netDue ? (totalPaid - netDue) : (overdraft !== undefined ? Number(overdraft) : (client.overdraft || 0));
+
+    db.clients[clientIndex] = client;
 
     saveDb(db);
     res.json(client);
@@ -2182,9 +2401,11 @@ function calculateCurrentAgeWeeks(
       return res.status(404).json({ error: "Selected client does not exist." });
     }
 
+    const parsedEggType = String(eggType || 'Brahma');
     const effectiveSpecialCase = specialCase || client.specialCase || "Standard";
     const computed = computeAmountDue({
       specialCase: effectiveSpecialCase,
+      eggType: parsedEggType,
       eggsCollected: Number(eggsCollected),
       customRate: customRate !== undefined ? Number(customRate) : undefined,
       eggsAfterScan: null,
@@ -2196,15 +2417,23 @@ function calculateCurrentAgeWeeks(
     const rate = computed.rate;
 
     // Days calculation helpers
-    const baseDate = new Date(dateBrought);
+    const normalizedDateBrought = normalizeDateStringToISO(dateBrought);
     
     const calculateOffsetDate = (offset: number) => {
-      const d = new Date(baseDate.getTime());
-      d.setDate(d.getDate() + offset);
-      return d.toISOString().split("T")[0];
+      const parts = normalizedDateBrought.split('-');
+      if (parts.length === 3) {
+        const y = Number(parts[0]);
+        const m = Number(parts[1]) - 1;
+        const d = Number(parts[2]);
+        const dt = new Date(y, m, d);
+        dt.setDate(dt.getDate() + offset);
+        const resY = dt.getFullYear();
+        const resM = String(dt.getMonth() + 1).padStart(2, '0');
+        const resD = String(dt.getDate()).padStart(2, '0');
+        return `${resY}-${resM}-${resD}`;
+      }
+      return normalizedDateBrought;
     };
-
-    const parsedEggType = String(eggType || 'Brahma') as 'Brahma' | 'Turkey' | 'Goose' | 'Quail';
     
     let scanOffset: number | null = 8;
     let transferOffset = 18;
@@ -2230,14 +2459,36 @@ function calculateCurrentAgeWeeks(
 
     // Apply Client Overdraft if used
     client.overdraft = client.overdraft || 0;
+    const batchId = id || crypto.randomUUID();
+    const existsIndex = db.incubator_records.findIndex((r: any) => r.id === batchId);
+
+    // Revert old batch overdraft impact if re-saving/updating existing
+    if (existsIndex !== -1) {
+      const oldBatch = db.incubator_records[existsIndex];
+      client.overdraft = Math.max(0, (client.overdraft || 0) + (oldBatch.overdraftUsed || 0) - (oldBatch.overdraftGenerated || 0));
+    }
+
     const requestedOverdraft = Number(overdraftUsed) || 0;
     const actualOverdraftUsed = Math.min(client.overdraft, requestedOverdraft, amountDue);
     if (actualOverdraftUsed > 0) {
       client.overdraft = client.overdraft - actualOverdraftUsed;
     }
 
-    const batchId = id || crypto.randomUUID();
-    const existsIndex = db.incubator_records.findIndex((r: any) => r.id === batchId);
+    const rawCashPaid = Math.max(0, Number(amountPaid) || 0);
+    const netCashDue = Math.max(0, amountDue - actualOverdraftUsed);
+
+    let effectiveAmountPaid = 0;
+    let overdraftGenerated = 0;
+
+    if (rawCashPaid > netCashDue) {
+      // Client overpaid! Difference is overdraft credit we owe client
+      overdraftGenerated = rawCashPaid - netCashDue;
+      effectiveAmountPaid = netCashDue;
+      client.overdraft = (client.overdraft || 0) + overdraftGenerated;
+    } else {
+      effectiveAmountPaid = rawCashPaid;
+      overdraftGenerated = 0;
+    }
 
     const newBatch = {
       id: batchId,
@@ -2247,6 +2498,7 @@ function calculateCurrentAgeWeeks(
       clientPhone: client.phone,
       eggType: parsedEggType,
       dateBrought: String(dateBrought),
+      createdAt: req.body.createdAt || new Date().toISOString(),
       day8Date,
       day18Date,
       day21Date,
@@ -2254,8 +2506,9 @@ function calculateCurrentAgeWeeks(
       specialCase: String(specialCase),
       ratePerEgg: rate,
       amountDue: amountDue,
-      amountPaid: Math.max(0, Number(amountPaid) || 0),
+      amountPaid: effectiveAmountPaid,
       overdraftUsed: actualOverdraftUsed,
+      overdraftGenerated: overdraftGenerated,
       eggsAfterScan: null,
       chicksHatched: null,
       notes: notes ? String(notes).trim() : ""
@@ -2282,8 +2535,9 @@ function calculateCurrentAgeWeeks(
     // Server-side data validation to prevent data corruption is required
     for (let i = 0; i < batches.length; i++) {
       const item = batches[i];
-      const eggs = Number(item.eggsCollected);
-      const amountPaid = Number(item.amountPaid);
+      const eggsVal = item.eggsCollected !== undefined && item.eggsCollected !== null ? item.eggsCollected : item.numberOfEggs;
+      const eggs = Number(eggsVal || 0);
+      const amountPaid = Number(item.amountPaid || 0);
       const rawMark = String(item.clientMark || "").trim();
 
       // Skip records that don't have a valid 2-letter client mark as they are filtered anyway,
@@ -2291,7 +2545,7 @@ function calculateCurrentAgeWeeks(
       if (rawMark.length === 2) {
         if (isNaN(eggs) || eggs < 0) {
           return res.status(400).json({
-            error: `Validation failure at item ${i + 1} (${item.clientName || 'Unknown'}): Eggs Collected must be a non-negative number. Got: ${item.eggsCollected}`
+            error: `Validation failure at item ${i + 1} (${item.clientName || 'Unknown'}): Eggs Collected must be a non-negative number. Got: ${eggsVal}`
           });
         }
         if (isNaN(amountPaid) || amountPaid < 0) {
@@ -2323,36 +2577,72 @@ function calculateCurrentAgeWeeks(
           name: clientName,
           mark: rawMark,
           phone: String(item.clientPhone || "").trim() || "237650000000",
-          location: String(item.clientLocation || "").trim() || "Bafoussam"
+          location: String(item.clientLocation || "").trim() || "Bafoussam",
+          overdraft: 0
         };
         db.clients.push(client);
         newClientsCount++;
       }
 
-      // Rates calculation based on specialCase
+      // Rates calculation based on specialCase & Egg Type
+      const importedEggType = String(item.eggType || "Brahma");
       const specialCase = String(item.specialCase || "Standard").trim();
-      let rate = 200;
-      if (specialCase === "Discount") rate = 150;
-      else if (specialCase === "Free") rate = 0;
+      const stdRate = getStandardRateBySpecies(importedEggType);
+      let rate = stdRate;
+      if (specialCase === "Discount" || specialCase === "150 Per Egg Brought" || specialCase.includes("150")) rate = 150;
+      else if (specialCase === "Free" || specialCase.toLowerCase().includes("free")) rate = 0;
       else if (specialCase === "Custom") {
-        rate = Number(item.ratePerEgg || 200);
+        rate = Number(item.ratePerEgg || stdRate);
       }
 
-      const eggs = Number(item.eggsCollected || 0);
-      const amountDue = eggs * rate;
+      const eggsVal = item.eggsCollected !== undefined && item.eggsCollected !== null ? item.eggsCollected : item.numberOfEggs;
+      const eggs = Number(eggsVal || 0);
+      let amountDue = eggs * rate;
+
+      const scanVal = item.eggsAfterScan !== undefined && item.eggsAfterScan !== null && item.eggsAfterScan !== "" ? Number(item.eggsAfterScan) : null;
+      const hatchVal = item.chicksHatched !== undefined && item.chicksHatched !== null && item.chicksHatched !== "" ? Number(item.chicksHatched) : null;
+
+      if (specialCase === "Per Chick" && hatchVal !== null) {
+        amountDue = hatchVal * rate;
+      } else if (specialCase === "Per Egg After Scan" && scanVal !== null) {
+        amountDue = scanVal * rate;
+      }
+
       const amountPaid = Number(item.amountPaid || 0);
 
-      const dateBrought = String(item.dateBrought || "").trim() || new Date().toISOString().split("T")[0];
+      // Overdraft & Debt calculation on import
+      let overdraftGenerated = 0;
+      let overdraftUsed = 0;
+
+      if (amountPaid > amountDue) {
+        overdraftGenerated = amountPaid - amountDue;
+        client.overdraft = (client.overdraft || 0) + overdraftGenerated;
+      } else if (amountPaid < amountDue) {
+        if (client.overdraft && client.overdraft > 0) {
+          const debtGap = amountDue - amountPaid;
+          const applyCredit = Math.min(client.overdraft, debtGap);
+          overdraftUsed = applyCredit;
+          client.overdraft -= applyCredit;
+        }
+      }
+
+      const dateBrought = normalizeDateStringToISO(item.dateBrought);
       
       // Safe date calculation helper
-      const baseDate = new Date(dateBrought);
       const calculateOffsetDate = (offset: number) => {
-        if (isNaN(baseDate.getTime())) {
-          return new Date().toISOString().split("T")[0];
+        const parts = dateBrought.split('-');
+        if (parts.length === 3) {
+          const y = Number(parts[0]);
+          const m = Number(parts[1]) - 1;
+          const d = Number(parts[2]);
+          const dt = new Date(y, m, d);
+          dt.setDate(dt.getDate() + offset);
+          const resY = dt.getFullYear();
+          const resM = String(dt.getMonth() + 1).padStart(2, '0');
+          const resD = String(dt.getDate()).padStart(2, '0');
+          return `${resY}-${resM}-${resD}`;
         }
-        const d = new Date(baseDate.getTime());
-        d.setDate(d.getDate() + offset);
-        return d.toISOString().split("T")[0];
+        return dateBrought;
       };
 
       const eggTypeVal = String(item.eggType || "Brahma").trim();
@@ -2398,8 +2688,10 @@ function calculateCurrentAgeWeeks(
         ratePerEgg: rate,
         amountDue: amountDue,
         amountPaid: amountPaid,
-        eggsAfterScan: item.eggsAfterScan !== undefined && item.eggsAfterScan !== null && item.eggsAfterScan !== "" ? Number(item.eggsAfterScan) : null,
-        chicksHatched: item.chicksHatched !== undefined && item.chicksHatched !== null && item.chicksHatched !== "" ? Number(item.chicksHatched) : null,
+        overdraftGenerated: overdraftGenerated,
+        overdraftUsed: overdraftUsed,
+        eggsAfterScan: scanVal,
+        chicksHatched: hatchVal,
         notes: item.notes ? String(item.notes).trim() : "Imported from spreadsheet backup"
       };
 
@@ -2432,6 +2724,7 @@ function calculateCurrentAgeWeeks(
       eggsAfterScan,
       chicksHatched,
       amountPaid,
+      overdraftUsed,
       notes
     } = req.body;
     const record = db.incubator_records[index];
@@ -2522,22 +2815,34 @@ function calculateCurrentAgeWeeks(
     record.ratePerEgg = computed.rate;
     record.amountDue = computed.amountDue;
 
-    if (amountPaid !== undefined) {
-      if (!isValidNonNegativeNumber(amountPaid)) {
+    if (amountPaid !== undefined || overdraftUsed !== undefined) {
+      if (amountPaid !== undefined && !isValidNonNegativeNumber(amountPaid)) {
         return res.status(400).json({ error: "Amount paid must be a valid non-negative number." });
       }
-      const parsedAmountPaid = Number(amountPaid);
-      const limit = record.amountDue - (record.overdraftUsed || 0);
-      if (parsedAmountPaid > limit) {
-        // Overpaid! Convert excess to client overdraft credit
-        const excess = parsedAmountPaid - limit;
-        record.amountPaid = limit;
-        const client = db.clients.find((c: any) => c.id === record.clientId);
-        if (client) {
-          client.overdraft = (client.overdraft || 0) + excess;
+
+      const client = db.clients.find((c: any) => c.id === record.clientId);
+      if (client) {
+        // Revert old record overdraft impact before applying updated amounts
+        client.overdraft = Math.max(0, (client.overdraft || 0) + (record.overdraftUsed || 0) - (record.overdraftGenerated || 0));
+
+        const reqOverdraft = overdraftUsed !== undefined ? Number(overdraftUsed) : (record.overdraftUsed || 0);
+        const actualOverdraftUsed = Math.min(client.overdraft, reqOverdraft, record.amountDue);
+        if (actualOverdraftUsed > 0) {
+          client.overdraft -= actualOverdraftUsed;
         }
-      } else {
-        record.amountPaid = parsedAmountPaid;
+        record.overdraftUsed = actualOverdraftUsed;
+
+        const rawCashPaid = amountPaid !== undefined ? Math.max(0, Number(amountPaid) || 0) : (record.amountPaid || 0);
+        const netCashDue = Math.max(0, record.amountDue - actualOverdraftUsed);
+
+        if (rawCashPaid > netCashDue) {
+          record.overdraftGenerated = rawCashPaid - netCashDue;
+          record.amountPaid = netCashDue;
+          client.overdraft = (client.overdraft || 0) + record.overdraftGenerated;
+        } else {
+          record.amountPaid = rawCashPaid;
+          record.overdraftGenerated = 0;
+        }
       }
     }
 
@@ -2552,6 +2857,13 @@ function calculateCurrentAgeWeeks(
 
   app.delete("/api/incubator/:id", requireAuth, (req, res) => {
     const db = loadDb();
+    const record = db.incubator_records.find((r: any) => r.id === req.params.id);
+    if (record) {
+      const client = db.clients.find((c: any) => c.id === record.clientId);
+      if (client) {
+        client.overdraft = Math.max(0, (client.overdraft || 0) + (record.overdraftUsed || 0) - (record.overdraftGenerated || 0));
+      }
+    }
     db.incubator_records = db.incubator_records.filter((r: any) => r.id !== req.params.id);
     saveDb(db);
     res.json({ success: true });

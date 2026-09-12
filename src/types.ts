@@ -33,8 +33,9 @@ export interface IncubatorRecord {
   clientId: string;
   clientName: string;
   clientMark: string;
-  eggType?: 'Brahma' | 'Turkey' | 'Goose' | 'Quail';
+  eggType?: 'Brahma' | 'Turkey' | 'Goose' | 'Quail' | 'Duck' | string;
   dateBrought: string; // YYYY-MM-DD
+  createdAt?: string; // ISO timestamp string for exact creation time
   day8Date: string; // YYYY-MM-DD auto-calculated (dateBrought + 8 days)
   day18Date: string; // YYYY-MM-DD auto-calculated (dateBrought + 18)
   day21Date: string; // YYYY-MM-DD auto-calculated (dateBrought + 21)
@@ -44,6 +45,7 @@ export interface IncubatorRecord {
   amountDue: number; // auto-calculated: eggsCollected * ratePerEgg
   amountPaid: number; // manual input
   overdraftUsed?: number; // overdraft deducted at creation
+  overdraftGenerated?: number; // excess amount paid stored as client credit
   eggsAfterScan: number | null; // entered on Day 8
   chicksHatched: number | null; // entered on Day 21
   clientPhone: string;
@@ -67,6 +69,7 @@ export interface Flock {
   breed: string;
   quantity: number;
   ageWeeks: number;
+  initialAgeWeeks?: number;
   dateAdded: string; // YYYY-MM-DD
   species?: BirdSpecies;
   countMode?: CountMode;
@@ -149,6 +152,7 @@ export interface CageAllocation {
   species?: BirdSpecies;
   quantity: number;
   ageWeeks: number;
+  initialAgeWeeks?: number;
   dateAdded: string; // YYYY-MM-DD
   dateTransferred: string; // YYYY-MM-DD
   countMode?: CountMode;

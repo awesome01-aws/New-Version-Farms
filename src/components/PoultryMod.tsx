@@ -5,10 +5,13 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Plus, Minus, Egg, Heart, Trash2, Calendar, Edit3, DollarSign, Package, User, AlertCircle, ShoppingCart, ArrowRightLeft, MoveRight, Home, Layers, Search, ArrowUpDown, SlidersHorizontal, Grid, Check, X, ChevronDown, Filter, Building, CheckCircle2, History, Maximize2, Minimize2, Sprout, ZoomIn, ZoomOut, RotateCcw
+  Plus, Minus, Egg, Heart, Trash2, Calendar, Edit3, DollarSign, Package, User, AlertCircle, ShoppingCart, ArrowRightLeft, MoveRight, Home, Layers, Search, ArrowUpDown, SlidersHorizontal, Grid, Check, X, ChevronDown, Filter, Building, CheckCircle2, History, Maximize2, Minimize2, Sprout, ZoomIn, ZoomOut, RotateCcw,
+  Receipt, Utensils, TrendingDown, Sparkles, LayoutGrid
 } from 'lucide-react';
 import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord } from '../types';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
+import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
+import { formatDateDDMMYYYY, parseDateToISO, calculateCurrentAgeWeeks, formatFlockAge, formatAgeDisplay, calculateFlockAge, parseNumericAgeWeeks } from '../utils/dateUtils';
 
 interface PoultryModProps {
   data: {
@@ -27,30 +30,6 @@ interface PoultryModProps {
   quickFormKey: string | null;
   setQuickFormKey: (key: string | null) => void;
   token: string;
-}
-
-/**
- * Helper function to automatically calculate current or transfer age of a flock in weeks based on 'Date Added'.
- */
-export function calculateCurrentAgeWeeks(
-  dateAdded?: string,
-  initialAgeWeeks: number = 0,
-  targetDate: string = new Date().toISOString().split('T')[0]
-): number {
-  const baseAge = Number(initialAgeWeeks) || 0;
-  if (!dateAdded) return baseAge;
-
-  const addedMs = new Date(dateAdded).getTime();
-  const targetMs = new Date(targetDate).getTime();
-
-  if (isNaN(addedMs) || isNaN(targetMs) || targetMs <= addedMs) {
-    return baseAge;
-  }
-
-  const elapsedDays = (targetMs - addedMs) / (1000 * 60 * 60 * 24);
-  const elapsedWeeks = elapsedDays / 7;
-  const total = baseAge + elapsedWeeks;
-  return Math.round(total * 10) / 10;
 }
 
 const DEFAULT_FARM_CAGES: CageLocation[] = [
@@ -213,6 +192,11 @@ export default function PoultryMod({
   setQuickFormKey,
   token
 }: PoultryModProps) {
+  const [, setNowTick] = useState<number>(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
   // Automatic Dynamic Age Segment calculations for dashboard counters across all farm flocks & allocations
   const getAgeGroupCounts = (speciesTarget: 'Turkey' | 'Chicken') => {
     let dayOlds = 0;   // < 1 week
@@ -230,7 +214,8 @@ export default function PoultryMod({
     };
 
     (data?.flocks || []).forEach(f => {
-      const age = calculateCurrentAgeWeeks(f.dateAdded, f.ageWeeks);
+      const ageInfo = calculateFlockAge(f.dateAdded, f.initialAgeWeeks ?? 0);
+      const age = ageInfo.weeks + (ageInfo.days / 7);
       const mainSpecies = f.species || '';
       const mainBreed = f.breed || '';
       const mainName = f.name || '';
@@ -293,11 +278,31 @@ export default function PoultryMod({
 
   // Collapsible state toggles
   const [activeFormSection, setActiveFormSection] = useState<string | null>(quickFormKey);
+  const [farmSubSection, setFarmSubSection] = useState<'all' | 'flocks' | 'eggs' | 'sales' | 'feed' | 'mortality' | 'eaten' | 'expenses'>('all');
 
   React.useEffect(() => {
     if (quickFormKey) {
       if (quickFormKey === 'egg_collection' || quickFormKey === 'egg') {
         setIsEggCollFormOpen(true);
+        setFarmSubSection('eggs');
+      } else if (quickFormKey === 'flock' || quickFormKey === 'transfer') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('flocks');
+      } else if (quickFormKey === 'sale') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('sales');
+      } else if (quickFormKey === 'feed') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('feed');
+      } else if (quickFormKey === 'mortality') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('mortality');
+      } else if (quickFormKey === 'eaten') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('eaten');
+      } else if (quickFormKey === 'expense') {
+        setActiveFormSection(quickFormKey);
+        setFarmSubSection('expenses');
       } else {
         setActiveFormSection(quickFormKey);
       }
@@ -573,8 +578,8 @@ export default function PoultryMod({
     if (transferSourceFlockId) {
       const sel = (data.flocks || []).find(f => f.id === transferSourceFlockId);
       if (sel) {
-        const computedAge = calculateCurrentAgeWeeks(sel.dateAdded, sel.ageWeeks, transferDate);
-        setTransferAgeWeeks(String(computedAge));
+        const computedAgeStr = formatFlockAge(sel.dateAdded, sel.initialAgeWeeks ?? 0, transferDate);
+        setTransferAgeWeeks(computedAgeStr);
       }
     }
   }, [transferDate, transferSourceFlockId, data.flocks]);
@@ -592,7 +597,7 @@ export default function PoultryMod({
       const cleanCageName = rawNotes.replace(/\s*\(.*\)/g, '').trim() || 'UNASSIGNED CAGE';
       const matchedCage = allFarmCages.find(c => c.cageName.toUpperCase() === cleanCageName.toUpperCase());
       const blockName = matchedCage ? matchedCage.blockName : 'BLOCK 0';
-      const computedAge = calculateCurrentAgeWeeks(f.dateAdded, f.ageWeeks);
+      const computedAge = calculateCurrentAgeWeeks(f.dateAdded, f.initialAgeWeeks ?? 0);
 
       list.push({
         id: `flock-${f.id}`,
@@ -602,6 +607,7 @@ export default function PoultryMod({
         species: (f.species || 'Chicken') as any,
         quantity: f.quantity,
         ageWeeks: computedAge,
+        initialAgeWeeks: f.initialAgeWeeks ?? 0,
         dateAdded: f.dateAdded,
         dateTransferred: f.dateAdded,
         countMode: f.countMode,
@@ -982,7 +988,7 @@ export default function PoultryMod({
 
   // Feed
   const [feedDate, setFeedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [feedType, setFeedType] = useState('Starter Mash');
+  const [feedType, setFeedType] = useState('Starter');
   const [feedBags, setFeedBags] = useState('');
   const [feedWeight, setFeedWeight] = useState('50'); // standard kg bag
   const [feedCostBag, setFeedCostBag] = useState('');
@@ -1018,16 +1024,88 @@ export default function PoultryMod({
   const [eatenNotes, setEatenNotes] = useState('');
   const [eatenSearch, setEatenSearch] = useState('');
 
-  // Auto-calculate current age in weeks for selected flock batch
-  React.useEffect(() => {
-    if (eatenFlockId) {
-      const sel = (data.flocks || []).find(f => f.id === eatenFlockId);
-      if (sel) {
-        const computedAge = calculateCurrentAgeWeeks(sel.dateAdded, sel.ageWeeks, eatenDate);
-        setEatenAgeWeeks(String(computedAge));
-      }
+  // Auto-Save Drafts for Sales, Expenses, Feed, Mortality & Fowls Eaten forms
+  const saleFormValues = React.useMemo(() => ({
+    saleDate, saleItem, saleQty, salePrice, saleBuyer, saleFlockId, saleAgeWeeks, saleNotes
+  }), [saleDate, saleItem, saleQty, salePrice, saleBuyer, saleFlockId, saleAgeWeeks, saleNotes]);
+
+  const { hasRestoredDraft: hasSaleDraft, clearDraft: clearSaleDraft } = useFormAutoSave(
+    'nvf_draft_sales',
+    saleFormValues,
+    (draft) => {
+      if (draft.saleDate !== undefined) setSaleDate(draft.saleDate);
+      if (draft.saleItem !== undefined) setSaleItem(draft.saleItem);
+      if (draft.saleQty !== undefined) setSaleQty(draft.saleQty);
+      if (draft.salePrice !== undefined) setSalePrice(draft.salePrice);
+      if (draft.saleBuyer !== undefined) setSaleBuyer(draft.saleBuyer);
+      if (draft.saleFlockId !== undefined) setSaleFlockId(draft.saleFlockId);
+      if (draft.saleAgeWeeks !== undefined) setSaleAgeWeeks(draft.saleAgeWeeks);
+      if (draft.saleNotes !== undefined) setSaleNotes(draft.saleNotes);
     }
-  }, [eatenDate, eatenFlockId, data.flocks]);
+  );
+
+  const expFormValues = React.useMemo(() => ({
+    expDate, expCat, expDesc, expAmount
+  }), [expDate, expCat, expDesc, expAmount]);
+
+  const { hasRestoredDraft: hasExpDraft, clearDraft: clearExpDraft } = useFormAutoSave(
+    'nvf_draft_expenses',
+    expFormValues,
+    (draft) => {
+      if (draft.expDate !== undefined) setExpDate(draft.expDate);
+      if (draft.expCat !== undefined) setExpCategory(draft.expCat);
+      if (draft.expDesc !== undefined) setExpDesc(draft.expDesc);
+      if (draft.expAmount !== undefined) setExpAmount(draft.expAmount);
+    }
+  );
+
+  const feedFormValues = React.useMemo(() => ({
+    feedDate, feedType, feedBags, feedWeight, feedCostBag, feedRemaining
+  }), [feedDate, feedType, feedBags, feedWeight, feedCostBag, feedRemaining]);
+
+  const { hasRestoredDraft: hasFeedDraft, clearDraft: clearFeedDraft } = useFormAutoSave(
+    'nvf_draft_feed',
+    feedFormValues,
+    (draft) => {
+      if (draft.feedDate !== undefined) setFeedDate(draft.feedDate);
+      if (draft.feedType !== undefined) setFeedType(draft.feedType);
+      if (draft.feedBags !== undefined) setFeedBags(draft.feedBags);
+      if (draft.feedWeight !== undefined) setFeedWeight(draft.feedWeight);
+      if (draft.feedCostBag !== undefined) setFeedCostBag(draft.feedCostBag);
+      if (draft.feedRemaining !== undefined) setFeedRemaining(draft.feedRemaining);
+    }
+  );
+
+  const mortFormValues = React.useMemo(() => ({
+    mortDate, mortFlockId, mortQty, mortCause
+  }), [mortDate, mortFlockId, mortQty, mortCause]);
+
+  const { hasRestoredDraft: hasMortDraft, clearDraft: clearMortDraft } = useFormAutoSave(
+    'nvf_draft_mortality',
+    mortFormValues,
+    (draft) => {
+      if (draft.mortDate !== undefined) setMortDate(draft.mortDate);
+      if (draft.mortFlockId !== undefined) setMortFlockId(draft.mortFlockId);
+      if (draft.mortQty !== undefined) setMortQty(draft.mortQty);
+      if (draft.mortCause !== undefined) setMortCause(draft.mortCause);
+    }
+  );
+
+  const eatenFormValues = React.useMemo(() => ({
+    eatenDate, eatenFlockId, eatenQty, eatenAgeWeeks, eatenNotes
+  }), [eatenDate, eatenFlockId, eatenQty, eatenAgeWeeks, eatenNotes]);
+
+  const { hasRestoredDraft: hasEatenDraft, clearDraft: clearEatenDraft } = useFormAutoSave(
+    'nvf_draft_fowls_eaten',
+    eatenFormValues,
+    (draft) => {
+      if (draft.eatenDate !== undefined) setEatenDate(draft.eatenDate);
+      if (draft.eatenFlockId !== undefined) setEatenFlockId(draft.eatenFlockId);
+      if (draft.eatenQty !== undefined) setEatenQty(draft.eatenQty);
+      if (draft.eatenAgeWeeks !== undefined) setEatenAgeWeeks(draft.eatenAgeWeeks);
+      if (draft.eatenNotes !== undefined) setEatenNotes(draft.eatenNotes);
+    }
+  );
 
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -1227,11 +1305,27 @@ export default function PoultryMod({
       setErrorMsg('Please select or enter the TO cage.');
       return;
     }
+    if (transferFromCage.trim().toLowerCase() === transferToCage.trim().toLowerCase()) {
+      setErrorMsg('Source cage and destination cage cannot be the same cage.');
+      return;
+    }
     if (!transferQty || Number(transferQty) <= 0 || isNaN(Number(transferQty))) {
       setErrorMsg('Please specify a valid positive quantity of fowls to transfer.');
       return;
     }
-    if (Number(transferAgeWeeks) < 0 || isNaN(Number(transferAgeWeeks))) {
+
+    const selFlock = transferSourceFlockId 
+      ? (data.flocks || []).find(f => f.id === transferSourceFlockId)
+      : undefined;
+
+    const numericAgeWeeks = parseNumericAgeWeeks(
+      transferAgeWeeks,
+      selFlock?.dateAdded,
+      selFlock?.initialAgeWeeks,
+      transferDate
+    );
+
+    if (numericAgeWeeks < 0 || isNaN(numericAgeWeeks)) {
       setErrorMsg('Bird age cannot be negative.');
       return;
     }
@@ -1252,7 +1346,7 @@ export default function PoultryMod({
           quantity: Number(transferQty),
           date: transferDate,
           notes: transferNotes,
-          ageWeeks: Number(transferAgeWeeks) || 0,
+          ageWeeks: numericAgeWeeks,
           flockId: transferSourceFlockId || undefined
         })
       });
@@ -1538,6 +1632,7 @@ export default function PoultryMod({
       costBag: Number(feedCostBag),
       stockRemaining: Number(feedRemaining)
     });
+    clearFeedDraft();
     setFeedBags('');
     setFeedCostBag('');
     setFeedRemaining('');
@@ -1571,6 +1666,7 @@ export default function PoultryMod({
       ageWeeks: saleAgeWeeks,
       notes: saleNotes
     });
+    clearSaleDraft();
     setSaleQty('');
     setSalePrice('');
     setSaleBuyer('');
@@ -1595,6 +1691,7 @@ export default function PoultryMod({
       quantity: Number(mortQty),
       cause: mortCause
     });
+    clearMortDraft();
     setMortFlockId('');
     setMortQty('');
     setMortCause('');
@@ -1616,6 +1713,7 @@ export default function PoultryMod({
       description: expDesc,
       amount: Number(expAmount)
     });
+    clearExpDraft();
     setExpDesc('');
     setExpAmount('');
   };
@@ -1656,6 +1754,7 @@ export default function PoultryMod({
       notes: eatenNotes
     });
 
+    clearEatenDraft();
     setEatenFlockId('');
     setEatenQty('');
     setEatenNotes('');
@@ -1759,7 +1858,7 @@ export default function PoultryMod({
   const largeInputClass = "w-full h-12 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-slate-800 transition-colors bg-white";
 
   const renderFlocksTableContent = (flockList: Flock[], isFullScreen = false) => (
-    <div className={`overflow-x-auto select-none rounded-xl border border-slate-100 bg-white ${isFullScreen ? 'max-h-[78vh]' : 'max-h-[500px]'} overflow-y-auto`}>
+    <div className={`overflow-x-auto select-none rounded-xl border border-slate-100 bg-white ${isFullScreen ? 'h-full min-h-full max-h-none' : 'max-h-[500px]'} overflow-y-auto`}>
       <table className="w-full border-collapse text-left min-w-[850px]">
         <thead className={`bg-slate-50 sticky top-0 ${isFullScreen ? 'text-[10px]' : 'text-xs'} font-black text-slate-500 uppercase tracking-wider z-10`}>
           <tr>
@@ -1774,10 +1873,10 @@ export default function PoultryMod({
                 className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 cursor-pointer"
               />
             </th>
-            <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Batch' : 'Flock Batch Name'}</th>
+            <th className={isFullScreen ? 'p-2' : 'p-3'}>Flock Batch Name</th>
             <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Species' : 'Species / Breed'}</th>
             <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Qty' : 'Quantity'}</th>
-            <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Age' : 'Age (Weeks)'}</th>
+            <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Age' : 'Age (Weeks, Days)'}</th>
             <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Date' : 'Date Added'}</th>
             <th className={isFullScreen ? 'p-2' : 'p-3'}>{isFullScreen ? 'Cage' : 'Cage Assignment (Dropdown)'}</th>
             <th className={`${isFullScreen ? 'p-2' : 'p-3'} text-center`}>Actions</th>
@@ -1797,7 +1896,7 @@ export default function PoultryMod({
               const displayType = isTurkey
                 ? (f.breed || 'Gobbler')
                 : (f.breed && f.breed !== 'Chicken' ? f.breed : 'Chicken');
-              const batchNameDisplay = isFullScreen ? formatShortBatch(f.name) : f.name;
+              const batchNameDisplay = f.name;
               return (
                 <tr key={f.id} className={`hover:bg-slate-50/40 ${isS ? 'bg-emerald-50/10' : ''}`}>
                   <td className={`${isFullScreen ? 'p-1.5 w-8' : 'p-3 w-10'} text-center`}>
@@ -1828,9 +1927,9 @@ export default function PoultryMod({
                   </td>
                   <td className={isFullScreen ? 'p-2' : 'p-3'}>{renderBreakdownBadge(f)}</td>
                   <td className={`${isFullScreen ? 'p-2' : 'p-3'} font-bold text-slate-800`}>
-                    {f.ageWeeks % 1 === 0 ? f.ageWeeks : Number(f.ageWeeks).toFixed(1)} wks
+                    {formatFlockAge(f.dateAdded, f.initialAgeWeeks ?? 0)}
                   </td>
-                  <td className={`${isFullScreen ? 'p-2 text-[10px]' : 'p-3 text-xs'} text-slate-500 font-mono`}>{f.dateAdded}</td>
+                  <td className={`${isFullScreen ? 'p-2 text-[10px]' : 'p-3 text-xs'} text-slate-500 font-mono`}>{formatDateDDMMYYYY(f.dateAdded)}</td>
                   <td className={isFullScreen ? 'p-2' : 'p-3'}>
                     <select
                       value={f.notes || ''}
@@ -1861,7 +1960,7 @@ export default function PoultryMod({
                           const cleanCage = (f.notes || '').replace(/\s*\(.*\)/g, '').trim() || 'ST 1';
                           setTransferFromCage(cleanCage);
                           setTransferQty(String(f.quantity));
-                          setTransferAgeWeeks(String(f.ageWeeks));
+                          setTransferAgeWeeks(formatFlockAge(f.dateAdded, f.initialAgeWeeks ?? 0));
                           setTransferToCage('');
                           setActiveFormSection('transfer');
                           if (fullscreenTable) setFullscreenTable(null);
@@ -1892,7 +1991,7 @@ export default function PoultryMod({
                               : [{ species: 'Turkey', quantity: '7' }, { species: 'Chicks', quantity: '2' }]
                           );
                           setEditFlockQty(String(f.quantity));
-                          setEditFlockAge(String(f.ageWeeks));
+                          setEditFlockAge(String(f.initialAgeWeeks ?? calculateCurrentAgeWeeks(f.dateAdded, f.initialAgeWeeks ?? 0)));
                           setEditFlockDate(f.dateAdded);
                           setEditFlockSpecies(f.species || 'Chicken');
                           setEditTurkeyType(f.breed === 'Hen' ? 'Hen' : 'Gobbler');
@@ -1943,6 +2042,60 @@ export default function PoultryMod({
           )}
         </div>
       )}
+
+      {/* High-Clarity Farm Sub-Section Selector */}
+      <div className="flex items-center gap-1.5 p-1.5 bg-slate-100/90 rounded-2xl border border-slate-200/70 overflow-x-auto select-none touch-pan-x scrollbar-none shadow-inner">
+        {[
+          { id: 'all', label: 'All Farm', icon: <LayoutGrid size={14} className="shrink-0" /> },
+          { id: 'flocks', label: 'Flocks & Cages', icon: <Layers size={14} className="shrink-0" />, count: totalChickens + totalTurkeys },
+          { id: 'eggs', label: 'Daily Egg Yield', icon: <Sparkles size={14} className="shrink-0" />, count: (data.daily_egg_collections || []).length },
+          { id: 'sales', label: 'Sales & Revenue', icon: <DollarSign size={14} className="shrink-0" />, count: (data.poultry_sales || []).length },
+          { id: 'feed', label: 'Feed Stock', icon: <Package size={14} className="shrink-0" />, count: (data.feed_records || []).length },
+          { id: 'mortality', label: 'Mortality', icon: <TrendingDown size={14} className="shrink-0" />, count: (data.mortality || []).length },
+          { id: 'eaten', label: 'Fowls Eaten', icon: <Utensils size={14} className="shrink-0" />, count: (data.fowls_eaten || []).length },
+          { id: 'expenses', label: 'Expenses', icon: <Receipt size={14} className="shrink-0" />, count: (data.expenses || []).length },
+        ].map((tab) => {
+          const isActive = farmSubSection === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => {
+                setFarmSubSection(tab.id as any);
+                if (tab.id !== 'all') {
+                  setTimeout(() => {
+                    const el = document.getElementById(
+                      tab.id === 'flocks' ? 'section_flocks' :
+                      tab.id === 'eggs' ? 'section_egg_collections' :
+                      tab.id === 'sales' ? 'section_sales' :
+                      tab.id === 'feed' ? 'section_feed' :
+                      tab.id === 'mortality' ? 'section_mortality' :
+                      tab.id === 'eaten' ? 'section_fowls_eaten' :
+                      'section_expenses'
+                    );
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }, 50);
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer select-none active:scale-95 shrink-0 ${
+                isActive
+                  ? 'bg-white text-emerald-900 shadow-sm font-extrabold ring-1 ring-slate-900/5'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+              }`}
+            >
+              <span className={isActive ? 'text-emerald-600' : 'text-slate-400'}>{tab.icon}</span>
+              <span>{tab.label}</span>
+              {tab.count !== undefined && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-bold ${
+                  isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200/80 text-slate-600'
+                }`}>
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
       {/* FARM INVENTORY SUMMARY GRID */}
       <div id="farm_inventory_dashboard" className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2379,6 +2532,18 @@ export default function PoultryMod({
         {/* Collapsible Cage Transfer Form */}
         {activeFormSection === 'transfer' && (
           <form id="transfer-form-section" onSubmit={handleExecuteTransfer} className="bg-amber-50/60 p-5 rounded-3xl border border-amber-200/80 space-y-4 mb-6 shadow-sm animate-in fade-in duration-200">
+            {errorMsg && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-bold flex items-center gap-2">
+                <AlertCircle size={16} className="shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+            {successMsg && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                <CheckCircle2 size={16} className="shrink-0" />
+                <span>{successMsg}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
@@ -2876,7 +3041,7 @@ export default function PoultryMod({
                   badge: `${(filteredAndSortedAllocations || []).reduce((acc, a) => acc + a.quantity, 0)} Fowls`,
                   icon: <Home size={20} />,
                   content: (
-                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-[78vh] overflow-y-auto bg-white">
+                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
                       <table className="w-full border-collapse text-left min-w-[950px]">
                         <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
                           <tr>
@@ -2900,8 +3065,10 @@ export default function PoultryMod({
                                 <td className="p-2.5 font-extrabold text-slate-900">{formatShortBatch(a.flockName)}</td>
                                 <td className="p-2.5">{a.species || 'Chicken'}</td>
                                 <td className="p-2.5 font-black text-emerald-700">{renderBreakdownBadge(a)}</td>
-                                <td className="p-2.5 font-mono font-bold">{a.ageWeeks} wks</td>
-                                <td className="p-2.5 font-mono text-slate-500 text-[10px]">{a.dateAdded || '-'}</td>
+                                <td className="p-2.5 font-mono font-bold">
+                                  {formatFlockAge(a.dateAdded, a.initialAgeWeeks ?? 0)}
+                                </td>
+                                <td className="p-2.5 font-mono text-slate-500 text-[10px]">{formatDateDDMMYYYY(a.dateAdded)}</td>
                                 <td className="p-2.5 text-slate-500 text-[10px]">{a.notes || '-'}</td>
                                 <td className="p-2.5 text-center">
                                   <div className="flex items-center justify-center gap-1.5">
@@ -3012,7 +3179,9 @@ export default function PoultryMod({
                               {c.batches.map(b => (
                                 <div key={b.id} className="text-[11px] font-bold text-slate-700 flex items-center justify-between gap-2 bg-white p-2 rounded-xl border border-slate-200/80 shadow-2xs">
                                   <span className="font-extrabold text-slate-900">{b.flockName}</span>
-                                  <span className="text-emerald-700 font-mono text-[10px] font-bold">{b.quantity} birds • {b.ageWeeks} wks</span>
+                                  <span className="text-emerald-700 font-mono text-[10px] font-bold">
+                                    {b.quantity} birds • {formatFlockAge(b.dateAdded, b.initialAgeWeeks ?? 0)}
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -3085,9 +3254,9 @@ export default function PoultryMod({
                           <td className="p-3">{badge}</td>
                           <td className="p-3">{renderBreakdownBadge(a)}</td>
                           <td className="p-3 text-slate-600 font-mono font-bold">
-                            {a.ageWeeks % 1 === 0 ? a.ageWeeks : a.ageWeeks.toFixed(1)} wks
+                            {formatFlockAge(a.dateAdded, a.initialAgeWeeks ?? 0)}
                           </td>
-                          <td className="p-3 text-slate-500 font-mono text-[11px]">{a.dateAdded || '-'}</td>
+                          <td className="p-3 text-slate-500 font-mono text-[11px]">{formatDateDDMMYYYY(a.dateAdded)}</td>
                           <td className="p-3 text-slate-500 max-w-[180px] truncate" title={a.notes || ''}>
                             {a.notes || '-'}
                           </td>
@@ -3104,7 +3273,7 @@ export default function PoultryMod({
                                   setTransferSpecies(a.species || 'Chicken');
                                   setTransferFromCage(a.cageName);
                                   setTransferQty(String(a.quantity));
-                                  setTransferAgeWeeks(String(a.ageWeeks || 0));
+                                  setTransferAgeWeeks(formatFlockAge(a.dateAdded, a.initialAgeWeeks ?? 0));
                                   setTransferToCage('');
                                   setActiveFormSection('transfer');
                                   setTimeout(() => {
@@ -3201,7 +3370,7 @@ export default function PoultryMod({
                   badge: `${(data.cage_transfers || []).length} Recorded Movements`,
                   icon: <History size={20} />,
                   content: (
-                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-[78vh] overflow-y-auto bg-white">
+                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
                       <table className="w-full border-collapse text-left min-w-[800px]">
                         <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
                           <tr>
@@ -3216,11 +3385,11 @@ export default function PoultryMod({
                         <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
                           {(sortedTransferHistory || []).map((t) => (
                             <tr key={t.id} className="hover:bg-amber-50/20 transition-colors">
-                              <td className="p-2 font-mono font-bold text-slate-700 text-[10px]">{t.date}</td>
+                              <td className="p-2 font-mono font-bold text-slate-700 text-[10px]">{formatDateDDMMYYYY(t.date)}</td>
                               <td className="p-2 font-extrabold text-slate-900">{formatShortBatch(t.flockName)}</td>
                               <td className="p-2 font-mono font-black text-emerald-800">{t.fromCage} → {t.toCage}</td>
                               <td className="p-2 font-black text-slate-900">{t.quantity}</td>
-                              <td className="p-2 font-mono font-bold">{t.ageWeeks ? `${Number(t.ageWeeks).toFixed(1)} wks` : '-'}</td>
+                              <td className="p-2 font-mono font-bold">{formatAgeDisplay(t.ageWeeks)}</td>
                               <td className="p-2 text-slate-500 text-[10px]">{t.notes || '-'}</td>
                             </tr>
                           ))}
@@ -3270,7 +3439,7 @@ export default function PoultryMod({
                         <td className="p-3 font-mono text-[11px] font-bold text-slate-600">
                           <div className="flex items-center gap-1.5">
                             <Calendar size={13} className="text-amber-600 shrink-0" />
-                            <span>{t.date}</span>
+                            <span>{formatDateDDMMYYYY(t.date)}</span>
                           </div>
                         </td>
                         <td className="p-3 font-bold text-slate-900">
@@ -3296,7 +3465,7 @@ export default function PoultryMod({
                           </span>
                         </td>
                         <td className="p-3 text-slate-600 font-mono">
-                          {t.ageWeeks !== undefined && t.ageWeeks !== null ? `${t.ageWeeks} wks` : '-'}
+                          {formatAgeDisplay(t.ageWeeks)}
                         </td>
                         <td className="p-3 text-slate-500 max-w-[200px] truncate" title={t.notes || ''}>
                           {t.notes || '-'}
@@ -3371,7 +3540,7 @@ export default function PoultryMod({
                 <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-xs">
                   {data.cage_transfers.map((t) => (
                     <tr key={t.id} className="hover:bg-slate-50/50">
-                      <td className="p-2.5 font-mono text-slate-500">{t.date}</td>
+                      <td className="p-2.5 font-mono text-slate-500">{formatDateDDMMYYYY(t.date)}</td>
                       <td className="p-2.5 font-bold text-slate-800">
                         {t.species === 'Turkey' ? '🦃' : '🐔'} {t.flockName} ({t.breed})
                       </td>
@@ -3381,7 +3550,7 @@ export default function PoultryMod({
                         {t.toCage}
                       </td>
                       <td className="p-2.5 font-extrabold text-slate-900">{t.quantity} birds</td>
-                      <td className="p-2.5">{t.ageWeeks ? `${Number(t.ageWeeks).toFixed(1)} wks` : '-'}</td>
+                      <td className="p-2.5">{formatAgeDisplay(t.ageWeeks)}</td>
                       <td className="p-2.5 text-slate-500">{t.notes || '-'}</td>
                       <td className="p-2.5 text-center">
                         <button
@@ -3637,7 +3806,7 @@ export default function PoultryMod({
                 badge: `${sortedEggCollections.length} Days Logged`,
                 icon: <Egg size={20} />,
                 content: (
-                  <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-[78vh] overflow-y-auto bg-white">
+                  <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
                     <table className="w-full border-collapse text-left min-w-[800px]">
                       <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
                         <tr>
@@ -3652,7 +3821,7 @@ export default function PoultryMod({
                       <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
                         {(sortedEggCollections || []).map((rec) => (
                           <tr key={rec.id} className="hover:bg-amber-50/20 transition-colors">
-                            <td className="p-2 font-mono font-bold text-slate-900 text-[10px]">{rec.date}</td>
+                            <td className="p-2 font-mono font-bold text-slate-900 text-[10px]">{formatDateDDMMYYYY(rec.date)}</td>
                             <td className="p-2 font-black text-amber-900">{rec.brahmaEggs || 0}</td>
                             <td className="p-2 font-black text-orange-900">{rec.turkeyEggs || 0}</td>
                             <td className="p-2 font-black text-emerald-800">{(rec.brahmaEggs || 0) + (rec.turkeyEggs || 0)}</td>
@@ -3701,7 +3870,7 @@ export default function PoultryMod({
                   return (
                     <tr key={rec.id} className={`hover:bg-amber-50/20 transition-colors ${isToday ? 'bg-amber-50/40' : ''}`}>
                       <td className="p-3 font-mono font-bold text-slate-900 flex items-center gap-2">
-                        <span>{rec.date}</span>
+                        <span>{formatDateDDMMYYYY(rec.date)}</span>
                         {isToday && (
                           <span className="px-2 py-0.5 bg-amber-500 text-white font-black text-[9px] rounded-md uppercase">
                             Today
@@ -3778,6 +3947,15 @@ export default function PoultryMod({
 
         {activeFormSection === 'feed' && (
           <form onSubmit={handleAddFeed} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+            <DraftSavedBadge
+              hasRestoredDraft={hasFeedDraft}
+              onDiscard={() => {
+                clearFeedDraft();
+                setFeedBags('');
+                setFeedCostBag('');
+                setFeedRemaining('');
+              }}
+            />
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Log Feed Bags Purchase</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -3798,10 +3976,9 @@ export default function PoultryMod({
                   onChange={(e) => setFeedType(e.target.value)}
                   className={largeInputClass}
                 >
-                  <option value="Starter Mash">Brahma Starter Mash</option>
-                  <option value="Grower Mash">Grower Developer Mash</option>
-                  <option value="Layers Pellets">Layers High Calcium Pellets</option>
-                  <option value="Fattening Feed">Brahma Fattening Grain</option>
+                  <option value="Starter">Starter</option>
+                  <option value="Grower">Grower</option>
+                  <option value="Layers">Layers</option>
                 </select>
               </div>
 
@@ -3947,7 +4124,7 @@ export default function PoultryMod({
                           className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 cursor-pointer"
                         />
                       </td>
-                      <td className="p-3 text-xs text-slate-500 font-mono">{fed.date}</td>
+                      <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(fed.date)}</td>
                       <td className="p-3 font-bold text-slate-900">{fed.feedType}</td>
                       <td className="p-3">{fed.bagsBought} bags ({fed.weightPerBag}kg)</td>
                       <td className="p-3 text-xs">{fed.costBag.toLocaleString()} FCFA</td>
@@ -3990,6 +4167,18 @@ export default function PoultryMod({
 
         {activeFormSection === 'sales' && (
           <form onSubmit={handleAddSale} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+            <DraftSavedBadge
+              hasRestoredDraft={hasSaleDraft}
+              onDiscard={() => {
+                clearSaleDraft();
+                setSaleQty('');
+                setSalePrice('');
+                setSaleBuyer('');
+                setSaleFlockId('');
+                setSaleAgeWeeks('');
+                setSaleNotes('');
+              }}
+            />
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Record Customer Sale</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -4039,7 +4228,8 @@ export default function PoultryMod({
                         setSaleFlockId(fid);
                         const targetF = (data?.flocks || []).find(x => x.id === fid);
                         if (targetF) {
-                          setSaleAgeWeeks(String(targetF.ageWeeks));
+                          const ageNum = calculateCurrentAgeWeeks(targetF.dateAdded, targetF.initialAgeWeeks ?? 0);
+                          setSaleAgeWeeks(String(ageNum));
                         }
                       }}
                       className="w-full h-12 px-4 rounded-xl border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-semibold text-blue-900 transition-colors bg-blue-50/50"
@@ -4053,7 +4243,7 @@ export default function PoultryMod({
                         })
                         .map(f => (
                           <option key={f.id} value={f.id}>
-                            {f.name} ({f.quantity} left | {f.ageWeeks % 1 === 0 ? f.ageWeeks : Number(f.ageWeeks).toFixed(2)} wks old)
+                            {f.name} ({f.quantity} left | {formatFlockAge(f.dateAdded, f.initialAgeWeeks ?? 0)} old)
                           </option>
                         ))
                       }
@@ -4216,7 +4406,7 @@ export default function PoultryMod({
                           className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 cursor-pointer"
                         />
                       </td>
-                      <td className="p-3 text-xs text-slate-500 font-mono">{sal.date}</td>
+                      <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(sal.date)}</td>
                       <td className="p-3 text-slate-900 font-bold">{sal.buyerName}</td>
                       <td className="p-3">
                         <div className="flex flex-col items-start gap-0.5">
@@ -4225,7 +4415,7 @@ export default function PoultryMod({
                           </span>
                           {sal.ageWeeks !== undefined && sal.ageWeeks !== null && (
                             <span className="text-[10px] font-bold text-slate-400 font-mono">
-                              {sal.ageWeeks % 1 === 0 ? sal.ageWeeks : Number(sal.ageWeeks).toFixed(2)} weeks
+                              {formatAgeDisplay(sal.ageWeeks)}
                             </span>
                           )}
                         </div>
@@ -4270,6 +4460,15 @@ export default function PoultryMod({
 
         {activeFormSection === 'mortality' && (
           <form onSubmit={handleAddMortality} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+            <DraftSavedBadge
+              hasRestoredDraft={hasMortDraft}
+              onDiscard={() => {
+                clearMortDraft();
+                setMortFlockId('');
+                setMortQty('');
+                setMortCause('');
+              }}
+            />
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Record Bird Death</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -4403,7 +4602,7 @@ export default function PoultryMod({
                           className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 cursor-pointer"
                         />
                       </td>
-                      <td className="p-3 text-xs text-slate-500 font-mono">{mor.date}</td>
+                      <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(mor.date)}</td>
                       <td className="p-3 text-slate-900 font-bold">{mor.flockName}</td>
                       <td className="p-3 text-rose-700 font-black">{mor.quantity} birds</td>
                       <td className="p-3 text-xs italic text-slate-500">{mor.cause || 'Unspecified'}</td>
@@ -4449,6 +4648,16 @@ export default function PoultryMod({
 
         {activeFormSection === 'fowls_eaten' && (
           <form onSubmit={handleAddFowlEaten} className="bg-amber-50/30 p-4 rounded-2xl border border-amber-100 space-y-4 mb-6">
+            <DraftSavedBadge
+              hasRestoredDraft={hasEatenDraft}
+              onDiscard={() => {
+                clearEatenDraft();
+                setEatenFlockId('');
+                setEatenQty('');
+                setEatenAgeWeeks('');
+                setEatenNotes('');
+              }}
+            />
             <h4 className="text-sm font-bold text-amber-900 uppercase tracking-wider mb-2">Record House Consumption</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div>
@@ -4624,7 +4833,7 @@ export default function PoultryMod({
                             className="rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
                           />
                         </td>
-                        <td className="p-3 text-xs text-slate-500 font-mono">{fe.date}</td>
+                        <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(fe.date)}</td>
                         <td className="p-3 text-slate-900 font-bold">{fe.flockName}</td>
                         <td className="p-3 text-xs">
                           <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-amber-50 text-amber-800 border border-amber-200">
@@ -4633,7 +4842,7 @@ export default function PoultryMod({
                         </td>
                         <td className="p-3 font-black text-amber-800">{fe.quantity} bird(s)</td>
                         <td className="p-3 text-xs font-mono font-bold text-slate-600">
-                          {fe.ageWeeks !== undefined && fe.ageWeeks !== null ? `${fe.ageWeeks} wks` : '-'}
+                          {formatAgeDisplay(fe.ageWeeks)}
                         </td>
                         <td className="p-3 text-xs italic text-slate-500">{fe.notes || '-'}</td>
                         <td className="p-3 text-center">
@@ -4673,6 +4882,14 @@ export default function PoultryMod({
 
         {activeFormSection === 'expense' && (
           <form onSubmit={handleAddExpense} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+            <DraftSavedBadge
+              hasRestoredDraft={hasExpDraft}
+              onDiscard={() => {
+                clearExpDraft();
+                setExpDesc('');
+                setExpAmount('');
+              }}
+            />
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Record Farm Expense Outlay</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -4808,7 +5025,7 @@ export default function PoultryMod({
                           className="rounded border-slate-300 text-emerald-650 focus:ring-emerald-500 cursor-pointer"
                         />
                       </td>
-                      <td className="p-3 text-xs text-slate-500 font-mono">{exp.date}</td>
+                      <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(exp.date)}</td>
                       <td className="p-3 text-slate-900 font-bold">
                         <span className="p-1 px-2 py-1 rounded-md text-xs font-bold uppercase tracking-wide bg-rose-50 text-rose-700 border border-rose-100">
                           {exp.category}
@@ -5603,141 +5820,109 @@ export default function PoultryMod({
 
       {/* FULLSCREEN TABLE OVERLAY MODAL */}
       {fullscreenTable && (
-        <div className="fixed inset-0 z-[99999] bg-slate-950/85 backdrop-blur-md flex flex-col p-2 sm:p-4 animate-in fade-in duration-200 select-none">
-          <div className="bg-white rounded-3xl shadow-2xl flex flex-col h-full overflow-hidden border border-slate-800">
-            {/* Modal Header */}
-            <div className="p-3 sm:p-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3 shrink-0 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black">
-                  {fullscreenTable.icon || <Sprout size={20} />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm sm:text-base font-black uppercase tracking-tight text-white">
-                      {fullscreenTable.title}
-                    </h3>
-                    {fullscreenTable.badge && (
-                      <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase border border-emerald-500/30">
-                        {fullscreenTable.badge}
-                      </span>
-                    )}
-                  </div>
-                  {fullscreenTable.subtitle && (
-                    <p className="text-slate-400 text-[11px] font-medium hidden sm:block">
-                      {fullscreenTable.subtitle}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Interactive Zoom Controls Toolbar */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-2xl p-1 text-white shadow-inner">
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom Out (-)"
-                  >
-                    <ZoomOut size={15} />
-                  </button>
-
-                  <div className="flex items-center gap-1 px-1">
-                    <span className="font-mono font-black text-xs text-emerald-400 min-w-[36px] text-center">
-                      {fullscreenZoom}%
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
-                    title="Zoom In (+)"
-                  >
-                    <ZoomIn size={15} />
-                  </button>
-
-                  {/* Preset Scale Buttons */}
-                  <div className="hidden md:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
-                    {[
-                      { label: '50%', val: 50 },
-                      { label: '75%', val: 75 },
-                      { label: '85%', val: 85 },
-                      { label: '100%', val: 100 },
-                      { label: '125%', val: 125 }
-                    ].map(p => (
-                      <button
-                        key={p.val}
-                        type="button"
-                        onClick={() => setFullscreenZoom(p.val)}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
-                          fullscreenZoom === p.val 
-                            ? 'bg-emerald-500 text-slate-950 font-black' 
-                            : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenZoom(100)}
-                    className="p-1.5 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
-                    title="Reset Zoom to 100% Fit"
-                  >
-                    <RotateCcw size={14} />
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-2xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 border border-slate-700"
-                >
-                  <Minimize2 size={16} />
-                  <span className="hidden sm:inline">Exit Fullscreen</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Content - Touch Pinch Zoomable Container */}
-            <div 
-              className="flex-1 overflow-auto p-2 sm:p-4 bg-slate-100/70 touch-pan-x touch-pan-y relative"
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-            >
-              <div 
-                style={{ 
-                  zoom: fullscreenZoom / 100,
-                  WebkitZoom: fullscreenZoom / 100,
-                  transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
-                }}
-                className="w-full min-w-full"
-              >
-                {fullscreenTable.content}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-2.5 sm:p-3 bg-white border-t border-slate-200 flex items-center justify-between shrink-0 text-xs font-semibold text-slate-500">
-              <span className="hidden sm:inline text-[11px] text-slate-400">
-                Pinch on screen or use zoom controls above • Press Esc to close
+        <div className="fixed inset-0 z-[99999] bg-white flex flex-col h-screen w-screen overflow-hidden select-none animate-in fade-in duration-150">
+          {/* Minimal Floating Top Control Bar */}
+          <div className="bg-slate-900 text-white px-3 py-1.5 flex items-center justify-between shrink-0 border-b border-slate-800 z-50">
+            <div className="flex items-center gap-2 text-slate-300 text-xs font-bold">
+              <span className="truncate max-w-[200px] sm:max-w-[400px] text-slate-200 uppercase tracking-wide">
+                {fullscreenTable.title}
               </span>
-              <div className="flex items-center gap-2 ml-auto">
-                <span className="text-[11px] font-bold text-slate-600 sm:hidden">
-                  Pinch or tap +/- to zoom
+              {fullscreenTable.badge && (
+                <span className="hidden md:inline bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase border border-emerald-500/30">
+                  {fullscreenTable.badge}
                 </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Interactive Zoom Controls Toolbar */}
+              <div className="flex items-center gap-1 bg-slate-800 border border-slate-700/80 rounded-xl p-1 text-white shadow-inner">
                 <button
                   type="button"
-                  onClick={() => setFullscreenTable(null)}
-                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs rounded-xl transition-colors cursor-pointer"
+                  onClick={() => setFullscreenZoom(prev => Math.max(35, prev - 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom Out (-)"
                 >
-                  Close
+                  <ZoomOut size={16} />
+                </button>
+
+                <div className="flex items-center gap-1 px-1">
+                  <span className="font-mono font-bold text-xs text-emerald-400 min-w-[36px] text-center">
+                    {fullscreenZoom}%
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(prev => Math.min(200, prev + 15))}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-300 hover:text-white"
+                  title="Zoom In (+)"
+                >
+                  <ZoomIn size={16} />
+                </button>
+
+                {/* Preset Scale Buttons */}
+                <div className="hidden lg:flex items-center gap-1 border-l border-slate-700 pl-1.5 ml-1">
+                  {[
+                    { label: '50%', val: 50 },
+                    { label: '75%', val: 75 },
+                    { label: '100%', val: 100 },
+                    { label: '125%', val: 125 }
+                  ].map(p => (
+                    <button
+                      key={p.val}
+                      type="button"
+                      onClick={() => setFullscreenZoom(p.val)}
+                      className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold cursor-pointer transition-colors ${
+                        fullscreenZoom === p.val 
+                          ? 'bg-emerald-500 text-slate-950 font-black' 
+                          : 'bg-slate-700/60 hover:bg-slate-700 text-slate-300'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFullscreenZoom(100)}
+                  className="p-1 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer text-slate-400 hover:text-white ml-0.5"
+                  title="Reset Zoom (100%)"
+                >
+                  <RotateCcw size={14} />
                 </button>
               </div>
+
+              {/* Close Button */}
+              <button
+                type="button"
+                onClick={() => setFullscreenTable(null)}
+                className="p-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold px-3 shadow-xs"
+                title="Close Fullscreen View (Esc)"
+              >
+                <X size={16} />
+                <span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Modal Content - Touch Pinch Zoomable Container taking 100% space */}
+          <div 
+            className="flex-1 w-full h-full overflow-auto p-0 bg-white touch-pan-x touch-pan-y relative"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            <div 
+              style={{ 
+                zoom: fullscreenZoom / 100,
+                WebkitZoom: fullscreenZoom / 100,
+                transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
+              }}
+              className="w-full h-full min-w-full"
+            >
+              {fullscreenTable.content}
             </div>
           </div>
         </div>

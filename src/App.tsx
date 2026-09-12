@@ -14,6 +14,8 @@ import ReportsMod from './components/ReportsMod';
 import { RefreshCw, Sparkles } from 'lucide-react';
 import NotificationHub from './components/NotificationHub';
 import ExcelImportModal from './components/ExcelImportModal';
+import GlobalSearchModal from './components/GlobalSearchModal';
+import Footer from './components/Footer';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('nvf_operator_token'));
@@ -52,12 +54,26 @@ export default function App() {
     fowls_eaten: []
   });
 
-  // Modal selector for Incubator Record updates
+  // Modal selector for Incubator Record and Client updates
   const [selectedEditRecord, setSelectedEditRecord] = useState<IncubatorRecord | null>(null);
+  const [selectedClientForEdit, setSelectedClientForEdit] = useState<any | null>(null);
 
   // Reminders assistant drawer toggles
   const [isNotificationHubOpen, setIsNotificationHubOpen] = useState(false);
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
+  const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
+
+  // Keyboard shortcut (Ctrl+K or ⌘K) to open search modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsGlobalSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Derive unread/active notifications count for Day 18, Day 21, and 6 PM Egg Collection
   const todayStr = new Date().toISOString().split('T')[0];
@@ -98,19 +114,30 @@ export default function App() {
   // Quick Action Form forwarders (enables triggering collapsible toggles from Dashboard)
   const [quickFormKey, setQuickFormKey] = useState<string | null>(null);
 
-  // Sync / Refresh main DB state
+  // Sync / Refresh main DB state with ETag caching
+  const lastETagRef = React.useRef<string | null>(null);
+
   const syncDatabase = useCallback(async (authToken: string, isSilent = false) => {
     if (!isSilent) {
       setIsLoading(true);
     }
     setErrorMsg('');
     try {
-      const res = await fetch('/api/data', {
-        headers: {
-          'Authorization': authToken,
-          'Content-Type': 'application/json'
-        }
-      });
+      const headers: Record<string, string> = {
+        'Authorization': authToken,
+        'Content-Type': 'application/json'
+      };
+      if (isSilent && lastETagRef.current) {
+        headers['If-None-Match'] = lastETagRef.current;
+      }
+
+      const res = await fetch('/api/data', { headers });
+
+      if (res.status === 304) {
+        // Unchanged on server -> skip parsing & re-renders cleanly!
+        return;
+      }
+
       if (res.status === 401) {
         // Clear session on unauthorized
         localStorage.removeItem('nvf_operator_token');
@@ -123,6 +150,12 @@ export default function App() {
       if (!res.ok) {
         throw new Error('Failed to retrieve database contents.');
       }
+
+      const etag = res.headers.get('ETag');
+      if (etag) {
+        lastETagRef.current = etag;
+      }
+
       const data = await res.json();
       setDb(data);
     } catch (err: any) {
@@ -160,12 +193,12 @@ export default function App() {
     // Initial load - user visible loader is good for initial load
     syncDatabase(token);
 
-    // Auto-sync interval: checks for updates every 2 seconds while the tab is active (fully silent background sync)
+    // Auto-sync interval: checks for updates every 6 seconds while the tab is active (fully silent background sync)
     const pollInterval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         syncDatabase(token, true);
       }
-    }, 2000);
+    }, 6000);
 
     // Sync immediately whenever the user brings the app back to focus (fully silent)
     const handleFocus = () => {
@@ -194,6 +227,11 @@ export default function App() {
     setActiveTab('incubator');
   };
 
+  const handleOpenClient = (client: any) => {
+    setSelectedClientForEdit(client);
+    setActiveTab('incubator');
+  };
+
   const handleTriggerQuickForm = (formKey: string) => {
     setQuickFormKey(formKey);
   };
@@ -213,12 +251,13 @@ export default function App() {
         unreadNotificationsCount={activeRemindersCount}
         onOpenNotifications={() => setIsNotificationHubOpen(true)}
         onOpenExcelImport={() => setIsExcelImportOpen(true)}
+        onOpenSearch={() => setIsGlobalSearchOpen(true)}
         token={token}
         onSyncComplete={() => syncDatabase(token, true)}
       />
 
       {/* Main Container Section */}
-      <main id="app_main" className="flex-1 w-full max-w-md md:max-w-5xl lg:max-w-7xl xl:max-w-[1536px] mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-24 overflow-y-auto transition-all">
+      <main id="app_main" className="flex-1 w-full max-w-7xl xl:max-w-[1536px] mx-auto px-2 sm:px-6 lg:px-8 pt-2 sm:pt-6 pb-24 sm:pb-20 overflow-y-auto transition-all">
         
         {/* Error notification banner */}
         {errorMsg && (
@@ -232,7 +271,7 @@ export default function App() {
         {activeTab === 'home' && (
           <HomeMod 
             db={db} 
-            triggerRefresh={() => token && syncDatabase(token)} 
+            triggerRefresh={() => token && syncDatabase(token, true)} 
             isLoading={isLoading} 
             onOpenEditRecord={handleOpenEditRecord}
             setActiveTab={setActiveTab}
@@ -243,7 +282,7 @@ export default function App() {
         {activeTab === 'farm' && (
           <PoultryMod 
             data={db} 
-            triggerRefresh={() => token && syncDatabase(token)}
+            triggerRefresh={() => token && syncDatabase(token, true)}
             quickFormKey={quickFormKey}
             setQuickFormKey={setQuickFormKey}
             token={token}
@@ -253,10 +292,12 @@ export default function App() {
         {activeTab === 'incubator' && (
           <IncubatorMod 
             data={db} 
-            triggerRefresh={() => token && syncDatabase(token)}
+            triggerRefresh={() => token && syncDatabase(token, true)}
             token={token}
             selectedEditRecord={selectedEditRecord}
             setSelectedEditRecord={setSelectedEditRecord}
+            selectedClientForEdit={selectedClientForEdit}
+            setSelectedClientForEdit={setSelectedClientForEdit}
             quickFormKey={quickFormKey}
             setQuickFormKey={setQuickFormKey}
           />
@@ -266,6 +307,8 @@ export default function App() {
           <ReportsMod db={db} />
         )}
 
+        {/* Global Page Footer */}
+        <Footer />
       </main>
 
 
@@ -275,7 +318,17 @@ export default function App() {
         isOpen={isExcelImportOpen}
         onClose={() => setIsExcelImportOpen(false)}
         token={token}
-        triggerRefresh={() => token && syncDatabase(token)}
+        triggerRefresh={() => token && syncDatabase(token, true)}
+      />
+
+      {/* Global Command Search Modal */}
+      <GlobalSearchModal
+        isOpen={isGlobalSearchOpen}
+        onClose={() => setIsGlobalSearchOpen(false)}
+        db={db}
+        setActiveTab={setActiveTab}
+        onOpenEditRecord={handleOpenEditRecord}
+        onOpenClient={handleOpenClient}
       />
 
       {/* Modern sliding notifications hub drawer overlay */}

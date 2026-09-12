@@ -77,6 +77,13 @@ export function setupOfflineInterceptor() {
       if (!navigator.onLine) {
         console.log(`[Offline Mode] Intercepted ${method} ${urlString} - Applying locally & queuing`);
         const { responseData } = executeLocalMutation(urlString, method, bodyData);
+        if (responseData && (responseData as any).error) {
+          return new Response(JSON.stringify(responseData), {
+            status: 400,
+            statusText: 'Bad Request',
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
         return new Response(JSON.stringify(responseData), {
           status: 200,
           statusText: 'OK (Saved Offline)',
@@ -105,6 +112,13 @@ export function setupOfflineInterceptor() {
       } catch (netError) {
         console.warn(`[Offline Fallback] Server unreachable for ${method} ${urlString}. Storing mutation locally.`, netError);
         const { responseData } = executeLocalMutation(urlString, method, bodyData);
+        if (responseData && (responseData as any).error) {
+          return new Response(JSON.stringify(responseData), {
+            status: 400,
+            statusText: 'Bad Request',
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
         return new Response(JSON.stringify(responseData), {
           status: 200,
           statusText: 'OK (Saved Offline)',

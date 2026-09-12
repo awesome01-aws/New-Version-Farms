@@ -34,8 +34,24 @@ export function notifyOfflineChange(status?: string) {
   window.dispatchEvent(new CustomEvent('nvf_offline_change', { detail: { status } }));
 }
 
+export function getStandardRateBySpecies(eggType?: string): number {
+  const t = String(eggType || '').toLowerCase().trim();
+  if (t.includes('quail') || t.includes('cailles') || t.includes('caille')) {
+    return 100;
+  }
+  if (
+    t.includes('turkey') || t.includes('dindon') || t.includes('dinde') ||
+    t.includes('duck') || t.includes('canard') ||
+    t.includes('goose') || t.includes('oie')
+  ) {
+    return 500;
+  }
+  return 200;
+}
+
 export function computeAmountDue(record: {
   specialCase?: string;
+  eggType?: string;
   eggsCollected?: number;
   ratePerEgg?: number;
   customRate?: number;
@@ -43,7 +59,8 @@ export function computeAmountDue(record: {
   chicksHatched?: number | null;
 }): { rate: number; amountDue: number } {
   const sc = String(record.specialCase || 'Standard').trim();
-  let rate = 200;
+  const stdRate = getStandardRateBySpecies(record.eggType);
+  let rate = stdRate;
 
   if (sc === '150 Per Egg Brought' || sc === 'Discount') {
     rate = 150;
@@ -52,16 +69,18 @@ export function computeAmountDue(record: {
   } else if (sc === 'Custom') {
     if (record.customRate !== undefined && record.customRate !== null && !isNaN(Number(record.customRate)) && Number(record.customRate) > 0) {
       rate = Number(record.customRate);
-    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && !isNaN(Number(record.ratePerEgg)) && Number(record.ratePerEgg) > 0 && Number(record.ratePerEgg) !== 200 && Number(record.ratePerEgg) !== 150) {
+    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && !isNaN(Number(record.ratePerEgg)) && Number(record.ratePerEgg) > 0) {
       rate = Number(record.ratePerEgg);
     } else {
-      rate = 200;
+      rate = stdRate;
     }
   } else {
     if (record.customRate !== undefined && record.customRate !== null && !isNaN(Number(record.customRate)) && Number(record.customRate) > 0) {
       rate = Number(record.customRate);
+    } else if (record.ratePerEgg !== undefined && record.ratePerEgg !== null && !isNaN(Number(record.ratePerEgg)) && Number(record.ratePerEgg) > 0 && record.ratePerEgg !== 200 && record.ratePerEgg !== 150 && record.ratePerEgg !== 500 && record.ratePerEgg !== 100) {
+      rate = Number(record.ratePerEgg);
     } else {
-      rate = 200;
+      rate = stdRate;
     }
   }
 
@@ -365,9 +384,16 @@ export function executeLocalMutation(
     else if (endpoint === '/api/clients' && method === 'POST') {
       const clientId = body.id || crypto.randomUUID();
       const mark = String(body.mark || '').trim().toUpperCase();
-      let client = db.clients.find(c => c.id === clientId || c.mark === mark);
+      const duplicate = db.clients.find(c => c.mark === mark && c.id !== clientId);
+      if (duplicate) {
+        responseData = { error: `Client mark [${mark}] is already assigned to ${duplicate.name}. Client marks must be unique.` };
+        description = `Register Client Failed (Duplicate Mark)`;
+        return { responseData, offlineQueued: false };
+      }
+      let client = db.clients.find(c => c.id === clientId);
       if (client) {
         client.name = String(body.name || '').trim();
+        client.mark = mark;
         client.phone = String(body.phone || '').trim();
         client.location = String(body.location || '').trim();
         if (body.specialCase) client.specialCase = body.specialCase;
@@ -391,7 +417,26 @@ export function executeLocalMutation(
       const id = endpoint.replace('/api/clients/', '');
       const idx = db.clients.findIndex(c => c.id === id);
       if (idx !== -1) {
+        const oldMark = db.clients[idx].mark;
+        if (body.mark) {
+          const cleanedMark = String(body.mark).trim().toUpperCase();
+          const duplicate = db.clients.find(c => c.mark === cleanedMark && c.id !== id);
+          if (duplicate) {
+            responseData = { error: `Client mark [${cleanedMark}] is already assigned to ${duplicate.name}. Client marks must be unique.` };
+            description = `Update Client Failed (Duplicate Mark)`;
+            return { responseData, offlineQueued: false };
+          }
+        }
         db.clients[idx] = { ...db.clients[idx], ...body };
+        if (body.mark) {
+          const cleanedMark = String(body.mark).trim().toUpperCase();
+          db.clients[idx].mark = cleanedMark;
+          db.incubator_records.forEach((r) => {
+            if (r.clientId === id || (oldMark && r.clientMark === oldMark && r.clientName === db.clients[idx].name)) {
+              r.clientMark = cleanedMark;
+            }
+          });
+        }
         if (body.specialCase && body.scope === 'all_time') {
           db.incubator_records.forEach((r) => {
             if (r.clientId === id) {
@@ -509,6 +554,7 @@ export function executeLocalMutation(
         clientPhone: client ? client.phone : (body.clientPhone || ''),
         eggType: parsedEggType,
         dateBrought: String(body.dateBrought),
+        createdAt: body.createdAt || new Date().toISOString(),
         day8Date,
         day18Date,
         day21Date,
