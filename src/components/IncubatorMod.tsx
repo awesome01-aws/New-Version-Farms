@@ -3011,7 +3011,7 @@ export default function IncubatorMod({
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
-                      INCUBATOR BATCHES & SETTING RECORDS MASTER TABLE
+                      INCUBATOR BATCHES
                     </h3>
                     <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase border ${
                       activeBatchesCount > 0 
@@ -3020,159 +3020,9 @@ export default function IncubatorMod({
                     }`}>
                       {activeBatchesCount} Active {activeBatchesCount === 1 ? 'Batch' : 'Batches'}
                     </span>
-                    <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full uppercase border border-slate-200">
-                      {totalBatchesCount} Total Recorded
-                    </span>
                   </div>
-                  <p className="text-slate-400 text-xs font-semibold mt-0.5">
-                    Master operational log of active setting batches (unhatched), candling, hatching schedules & balance tracking
-                  </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setFullscreenTable({
-                  title: "INCUBATOR BATCHES & SETTING RECORDS MASTER TABLE",
-                  subtitle: "Master view of active setting batches, candling schedules, hatcher transfers & financials",
-                  badge: `${activeBatchesCount} Active Batches (${totalBatchesCount} Total Records)`,
-                  icon: <Egg size={22} />,
-                  content: (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between px-1 text-[11px] font-bold text-slate-500">
-                        <span className="flex items-center gap-1.5 text-slate-600">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                          Scroll horizontally to view all 16 columns (Financials, Owed & Actions at the end)
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const el = document.getElementById('fullscreen_incubator_table_wrapper');
-                              if (el) el.scrollTo({ left: 0, behavior: 'smooth' });
-                            }}
-                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-black cursor-pointer transition-colors"
-                          >
-                            ◀ Start (Cols 1-8)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const el = document.getElementById('fullscreen_incubator_table_wrapper');
-                              if (el) el.scrollTo({ left: el.scrollWidth, behavior: 'smooth' });
-                            }}
-                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-black cursor-pointer transition-colors"
-                          >
-                            End (Cols 9-16 / Actions) ▶
-                          </button>
-                        </div>
-                      </div>
-                      <div id="fullscreen_incubator_table_wrapper" className="overflow-x-auto select-none rounded-2xl border border-slate-100 shadow-xs bg-white touch-pan-x scroll-smooth">
-                        <table className="w-full border-collapse text-left min-w-[1550px]">
-                        <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200 z-10 whitespace-nowrap">
-                          <tr>
-                            <th className="p-1.5 text-center w-7">#</th>
-                            <th className="p-1.5">CLIENT [MARK]</th>
-                            <th className="p-1.5">EGG</th>
-                            <th className="p-1.5">BROUGHT</th>
-                            <th className="p-1.5">CANDLE D8</th>
-                            <th className="p-1.5">HATCHER D18</th>
-                            <th className="p-1.5">HATCH D21</th>
-                            <th className="p-1.5 text-right">EGGS</th>
-                            <th className="p-1.5 text-right">INF</th>
-                            <th className="p-1.5 text-right">HATCHED</th>
-                            <th className="p-1.5 text-right">UNHATCH</th>
-                            <th className="p-1.5 text-right">DUE (F)</th>
-                            <th className="p-1.5 text-right">PAID (F)</th>
-                            <th className="p-1.5 text-center">OVERDRAFT</th>
-                            <th className="p-1.5 text-right">OWED</th>
-                            <th className="p-1.5 text-center">STATUS</th>
-                            <th className="p-1.5 text-center">ACTION</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-medium text-slate-800 text-[11px] whitespace-nowrap">
-                          {sortedRecords.length === 0 ? (
-                            <tr>
-                              <td colSpan={17} className="p-6 text-center text-slate-400 font-bold bg-slate-50">
-                                No incubator setting records found matching criteria.
-                              </td>
-                            </tr>
-                          ) : (
-                            sortedRecords.map((r, idx) => {
-                              const owed = Math.max(0, r.amountDue - r.amountPaid - (r.overdraftUsed || 0));
-                              const eggShort = (r.eggType || 'Chicken').replace(/Chicken/i, 'Chk').replace(/Turkey/i, 'Trk');
-                              return (
-                                <tr key={r.id} className="hover:bg-emerald-50/20 transition-colors">
-                                  <td className="p-1.5 text-center font-mono text-[10px] text-slate-400 font-bold">{idx + 1}</td>
-                                  <td className="p-1.5 font-black text-slate-900">
-                                    {r.clientName} <span className="text-emerald-700 font-mono">[{r.clientMark}]</span>
-                                  </td>
-                                  <td className="p-1.5 font-bold text-slate-800">{eggShort}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.dateBrought)}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day8Date)}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day18Date)}</td>
-                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day21Date)}</td>
-                                  <td className="p-1.5 text-right font-black text-slate-900">{r.eggsCollected}</td>
-                                  <td className="p-1.5 text-right font-bold text-rose-600">
-                                    {r.eggsAfterScan !== null ? Math.max(0, r.eggsCollected - r.eggsAfterScan) : 0}
-                                  </td>
-                                  <td className="p-1.5 text-right font-bold text-emerald-600">{r.chicksHatched || 0}</td>
-                                  <td className="p-1.5 text-right font-bold text-amber-600">
-                                    {r.eggsAfterScan !== null && r.chicksHatched !== null ? Math.max(0, r.eggsAfterScan - r.chicksHatched) : 0}
-                                  </td>
-                                  <td className="p-1.5 text-right font-mono font-bold text-slate-800">{r.amountDue.toLocaleString()}</td>
-                                  <td className="p-1.5 text-right font-mono font-bold text-emerald-700">{r.amountPaid.toLocaleString()}</td>
-                                  <td className="p-1.5 text-center font-mono font-bold">
-                                    {r.overdraftUsed && r.overdraftUsed > 0 ? (
-                                      <span className="text-blue-700 bg-blue-50 px-1 py-0.5 rounded text-[10px] border border-blue-100 whitespace-nowrap">
-                                        -{r.overdraftUsed.toLocaleString()} F
-                                      </span>
-                                    ) : r.overdraftGenerated && r.overdraftGenerated > 0 ? (
-                                      <span className="text-amber-800 bg-amber-50 px-1 py-0.5 rounded text-[10px] border border-amber-200 whitespace-nowrap">
-                                        +{r.overdraftGenerated.toLocaleString()} F
-                                      </span>
-                                    ) : (
-                                      <span className="text-slate-400 text-[10px]">0 F</span>
-                                    )}
-                                  </td>
-                                  <td className="p-1.5 text-right font-mono font-black text-rose-700">
-                                    {owed > 0 ? `${owed.toLocaleString()} F` : 'PAID'}
-                                  </td>
-                                  <td className="p-1.5 text-center font-black text-[9px]">
-                                    <span className={`px-1.5 py-0.5 rounded uppercase ${
-                                      owed <= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                                    }`}>
-                                      {owed <= 0 ? 'PAID' : 'UNPAID'}
-                                    </span>
-                                  </td>
-                                  <td className="p-1.5 text-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setFullscreenTable(null);
-                                        setSelectedEditRecord(r);
-                                      }}
-                                      className="p-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 rounded-lg cursor-pointer transition-colors"
-                                      title="Edit Batch"
-                                    >
-                                      <FileEdit size={13} />
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )
-              })}
-                className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200 self-start sm:self-auto"
-                title="View Master Table Fullscreen"
-              >
-                <Maximize2 size={15} />
-                <span className="hidden sm:inline">Fullscreen</span>
-              </button>
             </div>
             
             {/* Filter Search & Batch Status Filter Component */}
@@ -3376,6 +3226,162 @@ export default function IncubatorMod({
                 </div>
               </div>
             )}
+
+            {/* DIRECT ON TOP OF TABLE: Table Title & Fullscreen Button */}
+            <div className="flex items-center justify-between mb-2 px-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                  Batches & Setting Records ({sortedRecords.length})
+                </span>
+                <span className="text-[11px] font-semibold text-slate-400">
+                  • 14 Columns
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullscreenTable({
+                  title: "INCUBATOR BATCHES",
+                  subtitle: "Master view of active setting batches, candling schedules, hatcher transfers & financials",
+                  badge: `${activeBatchesCount} Active Batches (${totalBatchesCount} Total Records)`,
+                  icon: <Egg size={22} />,
+                  content: (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-1 text-[11px] font-bold text-slate-500">
+                        <span className="flex items-center gap-1.5 text-slate-600">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Scroll horizontally to view all columns
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById('fullscreen_incubator_table_wrapper');
+                              if (el) el.scrollTo({ left: 0, behavior: 'smooth' });
+                            }}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-black cursor-pointer transition-colors"
+                          >
+                            ◀ Start (Cols 1-8)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById('fullscreen_incubator_table_wrapper');
+                              if (el) el.scrollTo({ left: el.scrollWidth, behavior: 'smooth' });
+                            }}
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-black cursor-pointer transition-colors"
+                          >
+                            End (Cols 9-16 / Actions) ▶
+                          </button>
+                        </div>
+                      </div>
+                      <div id="fullscreen_incubator_table_wrapper" className="overflow-x-auto select-none rounded-2xl border border-slate-100 shadow-xs bg-white touch-pan-x scroll-smooth">
+                        <table className="w-full border-collapse text-left min-w-[1550px]">
+                        <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200 z-10 whitespace-nowrap">
+                          <tr>
+                            <th className="p-1.5 text-center w-7">#</th>
+                            <th className="p-1.5">CLIENT [MARK]</th>
+                            <th className="p-1.5">EGG</th>
+                            <th className="p-1.5">BROUGHT</th>
+                            <th className="p-1.5">CANDLE D8</th>
+                            <th className="p-1.5">HATCHER D18</th>
+                            <th className="p-1.5">HATCH D21</th>
+                            <th className="p-1.5 text-right">EGGS</th>
+                            <th className="p-1.5 text-right">INF</th>
+                            <th className="p-1.5 text-right">HATCHED</th>
+                            <th className="p-1.5 text-right">UNHATCH</th>
+                            <th className="p-1.5 text-right">DUE (F)</th>
+                            <th className="p-1.5 text-right">PAID (F)</th>
+                            <th className="p-1.5 text-center">OVERDRAFT</th>
+                            <th className="p-1.5 text-right">OWED</th>
+                            <th className="p-1.5 text-center">STATUS</th>
+                            <th className="p-1.5 text-center">ACTION</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-medium text-slate-800 text-[11px] whitespace-nowrap">
+                          {sortedRecords.length === 0 ? (
+                            <tr>
+                              <td colSpan={17} className="p-6 text-center text-slate-400 font-bold bg-slate-50">
+                                No incubator setting records found matching criteria.
+                              </td>
+                            </tr>
+                          ) : (
+                            sortedRecords.map((r, idx) => {
+                              const owed = Math.max(0, r.amountDue - r.amountPaid - (r.overdraftUsed || 0));
+                              const eggShort = (r.eggType || 'Chicken').replace(/Chicken/i, 'Chk').replace(/Turkey/i, 'Trk');
+                              return (
+                                <tr key={r.id} className="hover:bg-emerald-50/20 transition-colors">
+                                  <td className="p-1.5 text-center font-mono text-[10px] text-slate-400 font-bold">{idx + 1}</td>
+                                  <td className="p-1.5 font-black text-slate-900">
+                                    {r.clientName} <span className="text-emerald-700 font-mono">[{r.clientMark}]</span>
+                                  </td>
+                                  <td className="p-1.5 font-bold text-slate-800">{eggShort}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.dateBrought)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day8Date)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day18Date)}</td>
+                                  <td className="p-1.5 font-mono text-slate-600 text-[10px]">{formatDateDDMMYYYY(r.day21Date)}</td>
+                                  <td className="p-1.5 text-right font-black text-slate-900">{r.eggsCollected}</td>
+                                  <td className="p-1.5 text-right font-bold text-rose-600">
+                                    {r.eggsAfterScan !== null ? Math.max(0, r.eggsCollected - r.eggsAfterScan) : 0}
+                                  </td>
+                                  <td className="p-1.5 text-right font-bold text-emerald-600">{r.chicksHatched || 0}</td>
+                                  <td className="p-1.5 text-right font-bold text-amber-600">
+                                    {r.eggsAfterScan !== null && r.chicksHatched !== null ? Math.max(0, r.eggsAfterScan - r.chicksHatched) : 0}
+                                  </td>
+                                  <td className="p-1.5 text-right font-mono font-bold text-slate-800">{r.amountDue.toLocaleString()}</td>
+                                  <td className="p-1.5 text-right font-mono font-bold text-emerald-700">{r.amountPaid.toLocaleString()}</td>
+                                  <td className="p-1.5 text-center font-mono font-bold">
+                                    {r.overdraftUsed && r.overdraftUsed > 0 ? (
+                                      <span className="text-blue-700 bg-blue-50 px-1 py-0.5 rounded text-[10px] border border-blue-100 whitespace-nowrap">
+                                        -{r.overdraftUsed.toLocaleString()} F
+                                      </span>
+                                    ) : r.overdraftGenerated && r.overdraftGenerated > 0 ? (
+                                      <span className="text-amber-800 bg-amber-50 px-1 py-0.5 rounded text-[10px] border border-amber-200 whitespace-nowrap">
+                                        +{r.overdraftGenerated.toLocaleString()} F
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 text-[10px]">0 F</span>
+                                    )}
+                                  </td>
+                                  <td className="p-1.5 text-right font-mono font-black text-rose-700">
+                                    {owed > 0 ? `${owed.toLocaleString()} F` : 'PAID'}
+                                  </td>
+                                  <td className="p-1.5 text-center font-black text-[9px]">
+                                    <span className={`px-1.5 py-0.5 rounded uppercase ${
+                                      owed <= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                    }`}>
+                                      {owed <= 0 ? 'PAID' : 'UNPAID'}
+                                    </span>
+                                  </td>
+                                  <td className="p-1.5 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setFullscreenTable(null);
+                                        setSelectedEditRecord(r);
+                                      }}
+                                      className="p-1 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 rounded-lg cursor-pointer transition-colors"
+                                      title="Edit Batch"
+                                    >
+                                      <FileEdit size={13} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              })}
+                className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+                title="View Master Table Fullscreen"
+              >
+                <Maximize2 size={15} />
+                <span className="hidden sm:inline">Fullscreen</span>
+              </button>
+            </div>
 
             {/* THE MOST CRITICAL TABLE: EXACT COLUMN ORDER REQUIRED */}
             <div id="incubator_table_wrapper" className="overflow-x-auto select-none rounded-2xl border border-slate-200 shadow-xs max-h-[520px] overflow-y-auto touch-pan-x touch-pan-y scroll-smooth bg-white">
@@ -3668,6 +3674,54 @@ export default function IncubatorMod({
                 <span className="text-xs font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
                   {weeklySummaries.length} {weeklySummaries.length === 1 ? 'Week Recorded' : 'Weeks Recorded'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => setFullscreenTable({
+                    title: "WEEKLY INCUBATOR SUMMARY TOTALS",
+                    subtitle: "Accurate weekly summaries (Monday to Sunday) auto-calculated from all new egg batch records",
+                    badge: `${weeklySummaries.length} Weeks Recorded`,
+                    icon: <BarChart3 size={20} />,
+                    content: (
+                      <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-2xs bg-white h-full min-h-full overflow-y-auto">
+                        <table className="w-full border-collapse text-left min-w-[950px]">
+                          <thead className="bg-slate-50 sticky top-0 text-[11px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200 z-10">
+                            <tr>
+                              <th className="p-3">Week (Mon - Sun)</th>
+                              <th className="p-3 text-center">Clients</th>
+                              <th className="p-3">Eggs</th>
+                              <th className="p-3">After Scan</th>
+                              <th className="p-3">Hatched</th>
+                              <th className="p-3 text-right">Revenue</th>
+                              <th className="p-3 text-right">Overdraft</th>
+                              <th className="p-3 text-right">Debt</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-medium text-slate-800 text-xs">
+                            {weeklySummaries.map((row) => (
+                              <tr key={row.weekKey} className="hover:bg-slate-50/70 transition-colors">
+                                <td className="p-3 font-mono font-bold text-slate-900">
+                                  Week #{row.weekNumber} ({row.label})
+                                </td>
+                                <td className="p-3 text-center font-bold">{row.clientCount}</td>
+                                <td className="p-3 font-bold text-amber-950">{row.totalEggs.toLocaleString()}</td>
+                                <td className="p-3 font-bold text-yellow-900">{row.totalScan.toLocaleString()}</td>
+                                <td className="p-3 font-bold text-emerald-800">{row.totalHatched.toLocaleString()}</td>
+                                <td className="p-3 font-mono font-bold text-emerald-800 text-right">{row.revenue.toLocaleString()} FCFA</td>
+                                <td className="p-3 font-mono text-blue-700 text-right">{row.overdraftGenerated > 0 ? `+${row.overdraftGenerated.toLocaleString()}` : '0'} FCFA</td>
+                                <td className="p-3 font-mono font-bold text-rose-700 text-right">{row.debt > 0 ? `${row.debt.toLocaleString()} FCFA` : '0 FCFA'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  })}
+                  className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+                  title="View Weekly Totals Fullscreen"
+                >
+                  <Maximize2 size={15} />
+                  <span className="hidden sm:inline">Fullscreen</span>
+                </button>
               </div>
             </div>
 

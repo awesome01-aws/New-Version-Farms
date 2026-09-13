@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Minus, Egg, Heart, Trash2, Calendar, Edit3, DollarSign, Package, User, AlertCircle, ShoppingCart, ArrowRightLeft, MoveRight, Home, Layers, Search, ArrowUpDown, SlidersHorizontal, Grid, Check, X, ChevronDown, Filter, Building, CheckCircle2, History, Maximize2, Minimize2, Sprout, ZoomIn, ZoomOut, RotateCcw,
-  Receipt, Utensils, TrendingDown, Sparkles, LayoutGrid
+  Receipt, Utensils, UtensilsCrossed, Skull, TrendingDown, Sparkles, LayoutGrid
 } from 'lucide-react';
 import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord } from '../types';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
@@ -816,13 +816,6 @@ export default function PoultryMod({
   const [eggFormNotes, setEggFormNotes] = useState('');
   const [eggSearch, setEggSearch] = useState('');
 
-  React.useEffect(() => {
-    if (quickFormKey === 'egg_collection') {
-      setIsEggCollFormOpen(true);
-      setQuickFormKey(null);
-    }
-  }, [quickFormKey, setQuickFormKey]);
-
   const handleSaveEggCollection = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token) return;
@@ -874,18 +867,25 @@ export default function PoultryMod({
     }
   };
 
-  const handleDeleteEggCollection = async (id: string) => {
-    if (!token || !confirm('Are you sure you want to delete this daily egg collection log?')) return;
-    try {
-      const res = await fetch(`/api/daily_egg_collections/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error('Failed to delete egg collection log.');
-      triggerRefresh();
-    } catch (err: any) {
-      alert(err.message || 'Error deleting egg collection record');
-    }
+  const handleDeleteEggCollection = (id: string) => {
+    if (!token) return;
+    confirmDelete(
+      'Delete Egg Collection Record',
+      'Are you sure you want to delete this daily egg collection log? This action cannot be undone.',
+      async () => {
+        try {
+          const res = await fetch(`/api/daily_egg_collections/${id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!res.ok) throw new Error('Failed to delete egg collection log.');
+          setSuccessMsg('Egg collection log deleted successfully.');
+          triggerRefresh();
+        } catch (err: any) {
+          setErrorMsg(err.message || 'Error deleting egg collection record');
+        }
+      }
+    );
   };
 
   const startEditEggCollection = (rec: DailyEggCollection) => {
@@ -2877,25 +2877,6 @@ export default function PoultryMod({
                 <Plus size={14} />
                 <span>+ Add Batch</span>
               </button>
-
-              {/* Fullscreen Button */}
-              <button
-                type="button"
-                onClick={() =>
-                  setFullscreenTable({
-                    title: "FOWL BATCHES",
-                    subtitle: "Widescreen view of all active Brahma chicken, Turkey & growing fowl batches",
-                    badge: `${filteredFlocks.length} Active Batches`,
-                    icon: <Sprout size={20} />,
-                    content: renderFlocksTableContent(filteredFlocks, true)
-                  })
-                }
-                className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
-                title="View Table Fullscreen"
-              >
-                <Maximize2 size={15} />
-                <span className="hidden sm:inline">Fullscreen</span>
-              </button>
             </div>
           </div>
 
@@ -2931,6 +2912,32 @@ export default function PoultryMod({
               </div>
             </div>
           )}
+
+          {/* Direct Table Header with Fullscreen Button */}
+          <div className="flex items-center justify-between mb-2 mt-3 px-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                Fowl Batches Master Log ({filteredFlocks.length})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setFullscreenTable({
+                  title: "FOWL BATCHES",
+                  subtitle: "Widescreen view of all active Brahma chicken, Turkey & growing fowl batches",
+                  badge: `${filteredFlocks.length} Active Batches`,
+                  icon: <Sprout size={20} />,
+                  content: renderFlocksTableContent(filteredFlocks, true)
+                })
+              }
+              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+              title="View Table Fullscreen"
+            >
+              <Maximize2 size={15} />
+              <span className="hidden sm:inline">Fullscreen</span>
+            </button>
+          </div>
 
           {/* Table Render */}
           {renderFlocksTableContent(filteredFlocks)}
@@ -3032,86 +3039,94 @@ export default function PoultryMod({
                 <Plus size={14} />
                 <span>Add Row</span>
               </button>
-
-              <button
-                type="button"
-                onClick={() => setFullscreenTable({
-                  title: "LIVE CAGE BLOCK DISTRIBUTION TABLE",
-                  subtitle: "Real-time bird population distribution across all building blocks & cages",
-                  badge: `${(filteredAndSortedAllocations || []).reduce((acc, a) => acc + a.quantity, 0)} Fowls`,
-                  icon: <Home size={20} />,
-                  content: (
-                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
-                      <table className="w-full border-collapse text-left min-w-[950px]">
-                        <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
-                          <tr>
-                            <th className="p-2.5">BLOCK</th>
-                            <th className="p-2.5">CAGE</th>
-                            <th className="p-2.5">FLOCK BATCH</th>
-                            <th className="p-2.5">SPECIES</th>
-                            <th className="p-2.5">QTY</th>
-                            <th className="p-2.5">AGE</th>
-                            <th className="p-2.5">DATE ADDED</th>
-                            <th className="p-2.5">NOTES</th>
-                            <th className="p-2.5 text-center">ACTIONS</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
-                          {(filteredAndSortedAllocations || []).map((a) => {
-                            return (
-                              <tr key={a.id} className="hover:bg-emerald-50/20 transition-colors">
-                                <td className="p-2.5 font-black text-slate-900">{a.blockName}</td>
-                                <td className="p-2.5 font-black text-emerald-800">{a.cageName}</td>
-                                <td className="p-2.5 font-extrabold text-slate-900">{formatShortBatch(a.flockName)}</td>
-                                <td className="p-2.5">{a.species || 'Chicken'}</td>
-                                <td className="p-2.5 font-black text-emerald-700">{renderBreakdownBadge(a)}</td>
-                                <td className="p-2.5 font-mono font-bold">
-                                  {formatFlockAge(a.dateAdded, a.initialAgeWeeks ?? 0)}
-                                </td>
-                                <td className="p-2.5 font-mono text-slate-500 text-[10px]">{formatDateDDMMYYYY(a.dateAdded)}</td>
-                                <td className="p-2.5 text-slate-500 text-[10px]">{a.notes || '-'}</td>
-                                <td className="p-2.5 text-center">
-                                  <div className="flex items-center justify-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingAlloc(a);
-                                        setEditAllocForm({ ...a });
-                                        setFullscreenTable(null);
-                                      }}
-                                      className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
-                                      title="Edit Row"
-                                    >
-                                      <Edit3 size={14} />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        handleDeleteAlloc(a.id);
-                                        setFullscreenTable(null);
-                                      }}
-                                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                                      title="Delete Row"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                })}
-                className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
-                title="View Fullscreen Table"
-              >
-                <Maximize2 size={15} />
-                <span className="hidden sm:inline">Fullscreen</span>
-              </button>
             </div>
+          </div>
+
+          {/* Direct Table Header with Fullscreen Button */}
+          <div className="flex items-center justify-between mb-2 mt-3 px-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                {distViewMode === 'summary' ? 'Cage Location Summary Table' : 'Cage Block Distribution Records'} ({(filteredAndSortedAllocations || []).length})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFullscreenTable({
+                title: "LIVE CAGE BLOCK DISTRIBUTION TABLE",
+                subtitle: "Real-time bird population distribution across all building blocks & cages",
+                badge: `${(filteredAndSortedAllocations || []).reduce((acc, a) => acc + a.quantity, 0)} Fowls`,
+                icon: <Home size={20} />,
+                content: (
+                  <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                    <table className="w-full border-collapse text-left min-w-[950px]">
+                      <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                        <tr>
+                          <th className="p-2.5">BLOCK</th>
+                          <th className="p-2.5">CAGE</th>
+                          <th className="p-2.5">FLOCK BATCH</th>
+                          <th className="p-2.5">SPECIES</th>
+                          <th className="p-2.5">QTY</th>
+                          <th className="p-2.5">AGE</th>
+                          <th className="p-2.5">DATE ADDED</th>
+                          <th className="p-2.5">NOTES</th>
+                          <th className="p-2.5 text-center">ACTIONS</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                        {(filteredAndSortedAllocations || []).map((a) => {
+                          return (
+                            <tr key={a.id} className="hover:bg-emerald-50/20 transition-colors">
+                              <td className="p-2.5 font-black text-slate-900">{a.blockName}</td>
+                              <td className="p-2.5 font-black text-emerald-800">{a.cageName}</td>
+                              <td className="p-2.5 font-extrabold text-slate-900">{formatShortBatch(a.flockName)}</td>
+                              <td className="p-2.5">{a.species || 'Chicken'}</td>
+                              <td className="p-2.5 font-black text-emerald-700">{renderBreakdownBadge(a)}</td>
+                              <td className="p-2.5 font-mono font-bold">
+                                {formatFlockAge(a.dateAdded, a.initialAgeWeeks ?? 0)}
+                              </td>
+                              <td className="p-2.5 font-mono text-slate-500 text-[10px]">{formatDateDDMMYYYY(a.dateAdded)}</td>
+                              <td className="p-2.5 text-slate-500 text-[10px]">{a.notes || '-'}</td>
+                              <td className="p-2.5 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingAlloc(a);
+                                      setEditAllocForm({ ...a });
+                                      setFullscreenTable(null);
+                                    }}
+                                    className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                    title="Edit Row"
+                                  >
+                                    <Edit3 size={14} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleDeleteAlloc(a.id);
+                                      setFullscreenTable(null);
+                                    }}
+                                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                    title="Delete Row"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })}
+              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+              title="View Fullscreen Table"
+            >
+              <Maximize2 size={15} />
+              <span className="hidden sm:inline">Fullscreen</span>
+            </button>
           </div>
 
           {/* Allocation Table or Cage Location Summary Table */}
@@ -3521,6 +3536,55 @@ export default function PoultryMod({
                   Cage Transfer History Log ({data.cage_transfers.length} Transfers Recorded)
                 </h4>
               </div>
+              <button
+                type="button"
+                onClick={() => setFullscreenTable({
+                  title: "CAGE TRANSFER AUDIT HISTORY",
+                  subtitle: "Detailed log of all bird movements between blocks and cages",
+                  badge: `${data.cage_transfers.length} Transfers`,
+                  icon: <Layers size={20} />,
+                  content: (
+                    <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                      <table className="w-full border-collapse text-left min-w-[700px]">
+                        <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                          <tr>
+                            <th className="p-2.5">Date</th>
+                            <th className="p-2.5">Flock / Batch</th>
+                            <th className="p-2.5">Moved From</th>
+                            <th className="p-2.5">Moved To</th>
+                            <th className="p-2.5">Qty Transferred</th>
+                            <th className="p-2.5">Age</th>
+                            <th className="p-2.5">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                          {data.cage_transfers.map((t) => (
+                            <tr key={t.id} className="hover:bg-slate-50/50">
+                              <td className="p-2.5 font-mono text-slate-500">{formatDateDDMMYYYY(t.date)}</td>
+                              <td className="p-2.5 font-bold text-slate-800">
+                                {t.species === 'Turkey' ? '🦃' : '🐔'} {t.flockName} ({t.breed})
+                              </td>
+                              <td className="p-2.5 text-rose-700 font-semibold">{t.fromCage}</td>
+                              <td className="p-2.5 text-emerald-700 font-extrabold flex items-center gap-1">
+                                <MoveRight size={12} className="text-emerald-500" />
+                                {t.toCage}
+                              </td>
+                              <td className="p-2.5 font-extrabold text-slate-900">{t.quantity} birds</td>
+                              <td className="p-2.5">{formatAgeDisplay(t.ageWeeks)}</td>
+                              <td className="p-2.5 text-slate-500">{t.notes || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                })}
+                className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+                title="View Table Fullscreen"
+              >
+                <Maximize2 size={15} />
+                <span className="hidden sm:inline">Fullscreen</span>
+              </button>
             </div>
 
             <div className="overflow-x-auto rounded-xl border border-slate-100 max-h-48 overflow-y-auto">
@@ -4074,6 +4138,57 @@ export default function PoultryMod({
           </div>
         )}
 
+        {/* Direct Table Header with Fullscreen Button */}
+        <div className="flex items-center justify-between mb-2 mt-4 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              Feed Inventory & Purchases Log ({data.feed_records.length} Records)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreenTable({
+              title: "FEED PURCHASE INVENTORY LOG",
+              subtitle: "All commercial feed purchases, bag quantities, unit costs, and warehouse stock levels",
+              badge: `${data.feed_records.length} Purchases`,
+              icon: <Package size={20} />,
+              content: (
+                <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                  <table className="w-full border-collapse text-left min-w-[750px]">
+                    <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                      <tr>
+                        <th className="p-2.5">Purchase Date</th>
+                        <th className="p-2.5">Feed Type</th>
+                        <th className="p-2.5">Bags Bought</th>
+                        <th className="p-2.5">Price Per Bag</th>
+                        <th className="p-2.5">Total Amount</th>
+                        <th className="p-2.5">Stock Remaining</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                      {data.feed_records.map((feed) => (
+                        <tr key={feed.id} className="hover:bg-amber-50/20 transition-colors">
+                          <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(feed.date)}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{feed.feedType}</td>
+                          <td className="p-2.5 font-black text-slate-900">{feed.bagsBought} bags ({feed.weightPerBag}kg)</td>
+                          <td className="p-2.5 font-mono text-slate-700">{(feed.costBag || 0).toLocaleString()} FCFA</td>
+                          <td className="p-2.5 font-mono font-bold text-emerald-800">{(feed.totalCost || 0).toLocaleString()} FCFA</td>
+                          <td className="p-2.5 font-mono font-black text-amber-900">{feed.stockRemaining} bags</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+            title="View Table Fullscreen"
+          >
+            <Maximize2 size={15} />
+            <span className="hidden sm:inline">Fullscreen</span>
+          </button>
+        </div>
+
         <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-80 overflow-y-auto">
           <table className="w-full border-collapse text-left min-w-[500px]">
             <thead className="bg-slate-50 sticky top-0 text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -4356,6 +4471,59 @@ export default function PoultryMod({
           </div>
         )}
 
+        {/* Direct Table Header with Fullscreen Button */}
+        <div className="flex items-center justify-between mb-2 mt-4 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              Poultry & Livestock Sales Ledger ({data.poultry_sales.length} Sales)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreenTable({
+              title: "POULTRY SALES LEDGER",
+              subtitle: "All live bird and turkey sales transactions, quantities, unit prices, and revenue",
+              badge: `${data.poultry_sales.length} Sales`,
+              icon: <DollarSign size={20} />,
+              content: (
+                <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                  <table className="w-full border-collapse text-left min-w-[750px]">
+                    <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                      <tr>
+                        <th className="p-2.5">Sale Date</th>
+                        <th className="p-2.5">Buyer Name</th>
+                        <th className="p-2.5">Item Type</th>
+                        <th className="p-2.5">Qty Sold</th>
+                        <th className="p-2.5">Unit Price</th>
+                        <th className="p-2.5">Total Revenue</th>
+                        <th className="p-2.5">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                      {data.poultry_sales.map((sale) => (
+                        <tr key={sale.id} className="hover:bg-emerald-50/20 transition-colors">
+                          <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(sale.date)}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{sale.buyerName || 'Walk-in Buyer'}</td>
+                          <td className="p-2.5 font-extrabold text-emerald-800">{sale.itemType}</td>
+                          <td className="p-2.5 font-black text-slate-900">{sale.quantity}</td>
+                          <td className="p-2.5 font-mono text-slate-700">{(sale.unitPrice || 0).toLocaleString()} FCFA</td>
+                          <td className="p-2.5 font-mono font-bold text-emerald-800">{(sale.totalAmount || 0).toLocaleString()} FCFA</td>
+                          <td className="p-2.5 text-slate-500">{sale.notes || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+            title="View Table Fullscreen"
+          >
+            <Maximize2 size={15} />
+            <span className="hidden sm:inline">Fullscreen</span>
+          </button>
+        </div>
+
         <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-80 overflow-y-auto">
           <table className="w-full border-collapse text-left min-w-[500px]">
             <thead className="bg-slate-50 sticky top-0 text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -4553,6 +4721,53 @@ export default function PoultryMod({
             </div>
           </div>
         )}
+
+        {/* Direct Table Header with Fullscreen Button */}
+        <div className="flex items-center justify-between mb-2 mt-4 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              Mortality & Flock Casualties Log ({data.mortality.length} Records)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreenTable({
+              title: "MORTALITY & CASUALTIES LOG",
+              subtitle: "Flock mortality tracking, health audits, suspected loss causes, and count adjustments",
+              badge: `${data.mortality.length} Records`,
+              icon: <Skull size={20} />,
+              content: (
+                <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                  <table className="w-full border-collapse text-left min-w-[750px]">
+                    <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                      <tr>
+                        <th className="p-2.5">Date Recorded</th>
+                        <th className="p-2.5">Flock Affected</th>
+                        <th className="p-2.5">Qty Lost</th>
+                        <th className="p-2.5">Suspected Cause</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                      {data.mortality.map((m) => (
+                        <tr key={m.id} className="hover:bg-rose-50/20 transition-colors">
+                          <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(m.date)}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{m.flockName || 'Unknown Batch'}</td>
+                          <td className="p-2.5 font-black text-rose-700">-{m.quantity} birds</td>
+                          <td className="p-2.5 text-slate-600">{m.cause || 'Unspecified'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+            title="View Table Fullscreen"
+          >
+            <Maximize2 size={15} />
+            <span className="hidden sm:inline">Fullscreen</span>
+          </button>
+        </div>
 
         <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-85 overflow-y-auto">
           <table className="w-full border-collapse text-left min-w-[500px]">
@@ -4772,6 +4987,57 @@ export default function PoultryMod({
           )}
         </div>
 
+        {/* Direct Table Header with Fullscreen Button */}
+        <div className="flex items-center justify-between mb-2 mt-4 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              Home Consumption & Farm Table Usage ({(data.fowls_eaten || []).length} Records)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreenTable({
+              title: "HOME CONSUMPTION / FOWLS EATEN LOG",
+              subtitle: "Birds consumed for home use, hospitality, and internal farm dining",
+              badge: `${(data.fowls_eaten || []).length} Records`,
+              icon: <UtensilsCrossed size={20} />,
+              content: (
+                <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                  <table className="w-full border-collapse text-left min-w-[750px]">
+                    <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                      <tr>
+                        <th className="p-2.5">Date</th>
+                        <th className="p-2.5">Flock Name</th>
+                        <th className="p-2.5">Species / Breed</th>
+                        <th className="p-2.5">Qty Eaten</th>
+                        <th className="p-2.5">Age (Weeks)</th>
+                        <th className="p-2.5">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                      {(data.fowls_eaten || []).map((eaten) => (
+                        <tr key={eaten.id} className="hover:bg-amber-50/20 transition-colors">
+                          <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(eaten.date)}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{eaten.flockName || 'General Flock'}</td>
+                          <td className="p-2.5 font-medium text-slate-700">{eaten.species} {eaten.breed ? `(${eaten.breed})` : ''}</td>
+                          <td className="p-2.5 font-black text-amber-900">{eaten.quantity} birds</td>
+                          <td className="p-2.5 font-mono text-slate-600">{eaten.ageWeeks ? `${eaten.ageWeeks} wks` : '-'}</td>
+                          <td className="p-2.5 text-slate-500">{eaten.notes || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+            title="View Table Fullscreen"
+          >
+            <Maximize2 size={15} />
+            <span className="hidden sm:inline">Fullscreen</span>
+          </button>
+        </div>
+
         <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-85 overflow-y-auto">
           <table className="w-full border-collapse text-left min-w-[550px]">
             <thead className="bg-slate-50 sticky top-0 text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -4976,6 +5242,53 @@ export default function PoultryMod({
             </div>
           </div>
         )}
+
+        {/* Direct Table Header with Fullscreen Button */}
+        <div className="flex items-center justify-between mb-2 mt-4 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              Operating Expenses & Supplies Ledger ({data.expenses.length} Records)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreenTable({
+              title: "OPERATING EXPENSES & SUPPLIES LEDGER",
+              subtitle: "All farm overhead, bedding, medications, transport, and equipment expenses",
+              badge: `${data.expenses.length} Records`,
+              icon: <Receipt size={20} />,
+              content: (
+                <div className="overflow-x-auto select-none rounded-xl border border-slate-100 h-full min-h-full overflow-y-auto bg-white">
+                  <table className="w-full border-collapse text-left min-w-[750px]">
+                    <thead className="bg-slate-100 sticky top-0 text-[10px] font-black text-slate-600 uppercase tracking-wider z-10">
+                      <tr>
+                        <th className="p-2.5">Expense Date</th>
+                        <th className="p-2.5">Category</th>
+                        <th className="p-2.5">Description</th>
+                        <th className="p-2.5">Outlay Price</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-[11px] font-semibold text-slate-800">
+                      {data.expenses.map((exp) => (
+                        <tr key={exp.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(exp.date)}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{exp.category}</td>
+                          <td className="p-2.5 text-slate-700">{exp.description}</td>
+                          <td className="p-2.5 font-mono font-bold text-rose-700">{(exp.amount || 0).toLocaleString()} FCFA</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-slate-200"
+            title="View Table Fullscreen"
+          >
+            <Maximize2 size={15} />
+            <span className="hidden sm:inline">Fullscreen</span>
+          </button>
+        </div>
 
         <div className="overflow-x-auto select-none rounded-xl border border-slate-100 max-h-80 overflow-y-auto">
           <table className="w-full border-collapse text-left min-w-[500px]">

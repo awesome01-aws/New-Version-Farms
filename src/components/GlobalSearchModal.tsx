@@ -286,6 +286,7 @@ export default function GlobalSearchModal({
           />
           {query && (
             <button
+              type="button"
               onClick={() => setQuery('')}
               className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors cursor-pointer"
             >
@@ -293,6 +294,7 @@ export default function GlobalSearchModal({
             </button>
           )}
           <button
+            type="button"
             onClick={onClose}
             className="px-2.5 py-1 text-xs font-black uppercase text-slate-400 hover:text-slate-700 bg-slate-200/50 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
           >
@@ -312,6 +314,7 @@ export default function GlobalSearchModal({
           ].map((cat) => (
             <button
               key={cat.id}
+              type="button"
               onClick={() => setSelectedCategory(cat.id as CategoryType)}
               className={`px-3 py-1 rounded-xl text-xs font-extrabold whitespace-nowrap transition-all cursor-pointer ${
                 selectedCategory === cat.id
@@ -337,18 +340,21 @@ export default function GlobalSearchModal({
               </p>
               <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                 <button
+                  type="button"
                   onClick={() => setQuery('SS')}
                   className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-[11px] font-bold text-slate-600 transition-colors cursor-pointer"
                 >
                   Mark 'SS'
                 </button>
                 <button
+                  type="button"
                   onClick={() => setQuery('Vaccine')}
                   className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-[11px] font-bold text-slate-600 transition-colors cursor-pointer"
                 >
                   'Vaccine'
                 </button>
                 <button
+                  type="button"
                   onClick={() => setQuery('Brahma')}
                   className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-[11px] font-bold text-slate-600 transition-colors cursor-pointer"
                 >

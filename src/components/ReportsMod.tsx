@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   BarChart3, DollarSign, ArrowDownRight, ArrowUpRight, CheckCircle, HelpCircle, 
-  MessageSquare, Download, FileSpreadsheet, TrendingUp, Sparkles, Activity, AlertTriangle, FileText, Printer, Filter
+  MessageSquare, Download, FileSpreadsheet, TrendingUp, Sparkles, Activity, AlertTriangle, FileText, Printer, Filter, X
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import jsPDF from 'jspdf';
@@ -458,15 +458,24 @@ export default function ReportsMod({ db }: ReportsModProps) {
   const [pdfPeriod, setPdfPeriod] = useState<PdfPeriod>('1_month');
   const [pdfScope, setPdfScope] = useState<PdfScope>('all');
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [reportNotification, setReportNotification] = useState<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null);
+
+  useEffect(() => {
+    if (reportNotification) {
+      const timer = setTimeout(() => setReportNotification(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [reportNotification]);
 
   const handleGeneratePdf = () => {
     setIsGeneratingPdf(true);
     setTimeout(() => {
       try {
         generatePdfReport(db, pdfPeriod, pdfScope);
+        setReportNotification({ type: 'success', message: 'PDF report generated and opened in print preview!' });
       } catch (err) {
         console.error('Failed to generate PDF report:', err);
-        alert('An error occurred while generating the PDF report. Please try again.');
+        setReportNotification({ type: 'error', message: 'An error occurred while generating the PDF report. Please try again.' });
       } finally {
         setIsGeneratingPdf(false);
       }
@@ -624,7 +633,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
 
   const handleDownloadCSV = (tableName: string, list: any[]) => {
     if (list.length === 0) {
-      alert(`There is no row data available in "${tableName}" to export yet.`);
+      setReportNotification({ type: 'warning', message: `There is no row data available in "${tableName}" to export yet.` });
       return;
     }
     const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(convertToCSV(list));
@@ -634,10 +643,40 @@ export default function ReportsMod({ db }: ReportsModProps) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setReportNotification({ type: 'success', message: `Exported ${tableName} (${list.length} rows) successfully!` });
   };
 
   return (
     <div id="reports_tab" className="space-y-6 pb-28">
+
+      {/* In-app notification toast */}
+      {reportNotification && (
+        <div className={`p-4 rounded-2xl flex items-center justify-between gap-3 text-xs font-bold border transition-all animate-in fade-in duration-150 ${
+          reportNotification.type === 'error'
+            ? 'bg-rose-50 border-rose-200 text-rose-800'
+            : reportNotification.type === 'warning'
+            ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+        }`}>
+          <div className="flex items-center gap-2">
+            {reportNotification.type === 'error' ? (
+              <AlertTriangle size={16} className="shrink-0 text-rose-600" />
+            ) : reportNotification.type === 'warning' ? (
+              <AlertTriangle size={16} className="shrink-0 text-amber-600" />
+            ) : (
+              <CheckCircle size={16} className="shrink-0 text-emerald-600" />
+            )}
+            <span>{reportNotification.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReportNotification(null)}
+            className="p-1 rounded-lg hover:bg-black/5 text-slate-500 hover:text-slate-800 cursor-pointer"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
       
       {/* Selector banner */}
       <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs flex items-center justify-between">

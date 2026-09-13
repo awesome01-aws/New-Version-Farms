@@ -192,6 +192,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
             </div>
           </div>
           <button 
+            type="button"
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors"
           >
@@ -211,6 +212,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
           </div>
           {permission !== 'granted' && (
             <button
+              type="button"
               onClick={requestNotificationPermission}
               className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded text-[9px] uppercase tracking-widest text-white cursor-pointer font-black"
             >
@@ -262,6 +264,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
 
                       <div className="pt-2 border-t border-orange-200/60 flex justify-end">
                         <button
+                          type="button"
                           onClick={() => {
                             if (onOpenEggCollection) onOpenEggCollection();
                             onClose();
@@ -321,6 +324,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
 
                       {/* WhatsApp trigger */}
                       <button
+                        type="button"
                         onClick={() => sendWhatsAppReminder(reminder)}
                         className="p-1 px-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-100 rounded-lg text-[10px] font-extrabold flex items-center gap-1 transition-all cursor-pointer"
                         title={`WhatsApp ${reminder.clientName}`}
@@ -331,8 +335,11 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
 
                       {/* Go to Incubator Edit Flow */}
                       <button
+                        type="button"
                         onClick={() => {
-                          onOpenEditRecord(reminder.record);
+                          if (reminder.record) {
+                            onOpenEditRecord(reminder.record);
+                          }
                           onClose();
                         }}
                         className="p-1 px-2 bg-slate-900 text-white hover:bg-slate-800 rounded-lg text-[10px] font-extrabold flex items-center gap-1 transition-all cursor-pointer"

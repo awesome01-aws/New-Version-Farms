@@ -307,6 +307,7 @@ export default function HomeMod({
 
           <div className="flex flex-wrap items-center gap-2 pt-2 md:pt-0">
             <button
+              type="button"
               onClick={() => {
                 setActiveTab('incubator');
                 onTriggerQuickForm('active_batches');
@@ -320,6 +321,7 @@ export default function HomeMod({
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setActiveTab('incubator');
                 onTriggerQuickForm('batch');
@@ -345,6 +347,7 @@ export default function HomeMod({
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {/* Action 1: New Egg Batch */}
           <button
+            type="button"
             onClick={() => {
               recordShortcutUsage('inc_new_batch');
               setActiveTab('incubator');
@@ -371,6 +374,7 @@ export default function HomeMod({
 
           {/* Action 2: Log Daily Eggs */}
           <button
+            type="button"
             onClick={() => {
               recordShortcutUsage('farm_egg_collection');
               setActiveTab('farm');
@@ -397,6 +401,7 @@ export default function HomeMod({
 
           {/* Action 3: Move Birds */}
           <button
+            type="button"
             onClick={() => {
               recordShortcutUsage('farm_transfer');
               setActiveTab('farm');
@@ -423,6 +428,7 @@ export default function HomeMod({
 
           {/* Action 4: Record Sale */}
           <button
+            type="button"
             onClick={() => {
               recordShortcutUsage('farm_sale');
               setActiveTab('farm');
@@ -473,6 +479,7 @@ export default function HomeMod({
           
           <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
             <button
+              type="button"
               onClick={() => {
                 setActiveTab('farm');
                 onTriggerQuickForm('egg_collection');
@@ -505,6 +512,7 @@ export default function HomeMod({
             </div>
             {dismissedAlertIds.length > 0 && (
               <button
+                type="button"
                 onClick={handleRestoreAlerts}
                 className="text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
               >
@@ -633,6 +641,7 @@ export default function HomeMod({
           {Object.values(ALL_SHORTCUTS).map((shortcut) => (
             <button
               key={shortcut.id}
+              type="button"
               onClick={() => handleShortcutClick(shortcut)}
               className="p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200/70 hover:border-slate-300 rounded-xl text-left transition-all cursor-pointer group active:scale-95 flex items-center gap-2.5"
             >
