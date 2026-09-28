@@ -42,7 +42,7 @@ The static audit covers 237 `<button>` elements in 13 active TSX files. It found
 - The original repository contains a tracked database and backups. `.gitignore` protects future local files but does not erase data already in Git history. Removing or migrating that tracked data requires a reviewed deployment/data plan so existing farm records are not lost.
 - Offline editing is still a bounded local queue. Concurrent edits to the same record from different phones have no conflict resolution, and device storage limits remain relevant. Do not describe the app as fully cloud synced while queue items remain.
 
-## 2026-09-28 — Recovering the existing farm records
+## 2026-09-29 — Recovering the existing farm records
 
 The first local preview had a new empty `data/db.json` because the source-only checkout did not include the app's tracked data or Firebase configuration. This was a preview setup error, not evidence that the original farm records were deleted. The empty preview database and its backup were preserved separately before recovery.
 
