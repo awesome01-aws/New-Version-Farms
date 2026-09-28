@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Shield, UserPlus, LogIn, Sprout, AlertCircle, Sparkles } from 'lucide-react';
+import { UserPlus, LogIn, AlertCircle, CheckCircle2 } from 'lucide-react';
 import AppLogo from './AppLogo';
 
 interface LoginProps {
@@ -17,7 +17,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [name, setName] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
-  const [userCount, setUserCount] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -28,7 +27,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       if (res.ok) {
         const data = await res.json();
         setSetupRequired(data.setupRequired);
-        setUserCount(data.userCount);
         if (data.setupRequired) {
           setIsRegistering(true);
         }
@@ -49,13 +47,13 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setLoading(true);
 
     if (!username.trim() || !password.trim()) {
-      setError('Please fill in all blanks.');
+      setError('Enter your username and password.');
       setLoading(false);
       return;
     }
 
     if (isRegistering && !name.trim()) {
-      setError('Please provide your actual name.');
+      setError('Enter your name.');
       setLoading(false);
       return;
     }
@@ -75,11 +73,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Authentication process failed.');
+        throw new Error(data.error || 'Could not sign in. Please try again.');
       }
 
       if (isRegistering) {
-        setSuccessMsg('Account registered successfully! You may now sign in.');
+        setSuccessMsg('Account created. Sign in with your new username and password.');
         setIsRegistering(false);
         setPassword('');
         checkAuthStatus();
@@ -87,40 +85,34 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         onLoginSuccess(data.token, data.user);
       }
     } catch (err: any) {
-      setError(err.message || 'Server error. Please verify host.');
+      setError(err.message || 'Could not reach the farm server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div id="login_container" className="min-h-screen bg-slate-50 flex flex-col justify-center items-center px-4 py-8">
-      <div id="login_card" className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-emerald-100 overflow-hidden">
-        {/* Banner with Cameroon Brand Mood */}
-        <div id="brand_banner" className="bg-gradient-to-br from-emerald-600 via-teal-700 to-emerald-900 p-8 text-center text-white relative">
-          <div className="absolute top-4 right-4 text-emerald-300 opacity-20">
-            <Sparkles size={40} />
-          </div>
-          <div className="flex justify-center mb-4">
+    <div id="login_container" className="min-h-screen bg-emerald-50/60 flex flex-col justify-center items-center px-4 py-6 sm:py-10">
+      <div id="login_card" className="w-full max-w-md bg-white rounded-3xl shadow-lg border border-emerald-100 overflow-hidden">
+        <div id="brand_banner" className="bg-emerald-800 px-6 py-7 text-center text-white">
+          <div className="flex justify-center mb-3">
             <AppLogo size="lg" showText={false} />
           </div>
-          <h1 className="text-2xl font-black tracking-tight uppercase">New Vision Farms</h1>
-          <p className="text-emerald-100 text-sm mt-1 font-semibold">Brahma Poultry & Incubator Hub</p>
-          <div className="mt-3 inline-block bg-yellow-400/20 text-yellow-300 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider border border-yellow-400/30">
-            🇨🇲 MILE 16 Bolifamba, Buea
-          </div>
+          <h1 className="text-2xl font-bold tracking-tight">New Vision Farms</h1>
+          <p className="text-emerald-100 text-sm mt-1">Your family's farm records</p>
         </div>
 
-        <div className="p-8">
-          <h2 className="text-xl font-bold text-slate-800 mb-6 text-center">
+        <div className="px-6 py-7 sm:p-8">
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">
             {setupRequired ? (
-              <span className="text-emerald-700">Set Up First Family Account</span>
+              'Create the first account'
             ) : isRegistering ? (
-              'Register Extra Family Member'
+              'Create an account'
             ) : (
-              'Enter Security Portal'
+              'Sign in'
             )}
           </h2>
+          <p className="text-sm text-slate-600 mb-6">{setupRequired ? 'Set up your family farm in a few steps.' : 'Enter your details to open the farm.'}</p>
 
           {error && (
             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl text-sm flex items-start gap-2">
@@ -131,7 +123,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
           {successMsg && (
             <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl text-sm flex items-start gap-2">
-              <Sparkles size={18} className="shrink-0 mt-0.5" />
+              <CheckCircle2 size={18} className="shrink-0 mt-0.5" />
               <span>{successMsg}</span>
             </div>
           )}
@@ -139,11 +131,12 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           <form onSubmit={handleSubmit} className="space-y-5">
             {isRegistering && (
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5 ml-1">Your Full Name</label>
+                <label htmlFor="reg_full_name" className="block text-sm font-semibold text-slate-700 mb-1.5">Your name</label>
                 <input
                   id="reg_full_name"
                   type="text"
-                  placeholder="e.g. Samuel Samehn"
+                  autoComplete="name"
+                  placeholder="Your name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full h-12 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-lg text-slate-800 transition-colors"
@@ -153,11 +146,13 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             )}
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5 ml-1">Username</label>
+              <label htmlFor="login_username" className="block text-sm font-semibold text-slate-700 mb-1.5">Username</label>
               <input
                 id="login_username"
                 type="text"
-                placeholder="Enter unique username"
+                autoComplete="username"
+                autoCapitalize="none"
+                placeholder="Your username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full h-12 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium text-lg text-slate-800 transition-colors"
@@ -166,10 +161,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5 ml-1">Password</label>
+              <label htmlFor="login_password" className="block text-sm font-semibold text-slate-700 mb-1.5">Password</label>
               <input
                 id="login_password"
                 type="password"
+                autoComplete={isRegistering ? 'new-password' : 'current-password'}
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -182,67 +178,28 @@ export default function Login({ onLoginSuccess }: LoginProps) {
               id="auth_submit_btn"
               type="submit"
               disabled={loading}
-              className="w-full h-14 bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold text-lg rounded-xl shadow-lg hover:from-emerald-700 hover:to-teal-700 focus:outline-none transition-all flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer"
+              className="w-full h-14 bg-emerald-700 text-white font-bold text-lg rounded-xl hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               {loading ? (
-                <span>Loading...</span>
+                <span>Please wait…</span>
               ) : isRegistering ? (
                 <>
                   <UserPlus size={20} />
-                  <span>Register Account</span>
+                  <span>Create account</span>
                 </>
               ) : (
                 <>
                   <LogIn size={20} />
-                  <span>Log In Securely</span>
+                  <span>Sign in</span>
                 </>
               )}
             </button>
           </form>
 
-          {/* Toggle Register Option - Locked to Max 5 Users */}
-          {!setupRequired && (
-            <div className="mt-6 text-center text-sm font-medium">
-              {isRegistering ? (
-                <p className="text-slate-500">
-                  Already registered?{' '}
-                  <button
-                    id="switch_to_login"
-                    type="button"
-                    onClick={() => setIsRegistering(false)}
-                    className="text-emerald-600 font-bold hover:underline cursor-pointer"
-                  >
-                    Log In
-                  </button>
-                </p>
-              ) : (
-                userCount < 10 && (
-                  <p className="text-slate-500">
-                    Add another family member?{' '}
-                    <button
-                      id="switch_to_register"
-                      type="button"
-                      onClick={() => setIsRegistering(true)}
-                      className="text-emerald-600 font-bold hover:underline cursor-pointer"
-                    >
-                      Register Now ({userCount}/10)
-                    </button>
-                  </p>
-                )
-              )}
-
-              {userCount >= 10 && !isRegistering && (
-                <p className="text-xs text-slate-400 mt-2">
-                  🛡️ Family account cap reached (10/10). Contact administrator to change users.
-                </p>
-              )}
-            </div>
-          )}
+          {!setupRequired && <p className="mt-6 text-center text-sm text-slate-600">Need an account? Ask a family member who already uses the app to add you from the account menu.</p>}
         </div>
       </div>
-      <p className="text-xs text-slate-400 mt-6 text-center max-w-xs">
-        Authorized use only. All actions and incubator logs are recorded. Keep passwords private.
-      </p>
+      <p className="text-sm text-slate-600 mt-5 text-center max-w-xs">Keep your password private.</p>
     </div>
   );
 }
