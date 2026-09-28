@@ -33,18 +33,18 @@ export function setupOfflineInterceptor() {
     if ((urlString.includes('/api/data') || urlString.includes('/api/db')) && method === 'GET') {
       if (navigator.onLine) {
         try {
+          if (token && getSyncQueue().length > 0) await syncPendingQueue(token);
+          if (getSyncQueue().length > 0) {
+            return new Response(JSON.stringify(getOfflineDb()), { status: 200, headers: { 'Content-Type': 'application/json', 'X-NVF-Offline': 'pending' } });
+          }
           const response = await originalFetch.call(window, input, init);
           if (response.ok) {
             const cloned = response.clone();
             cloned.json().then(data => {
               saveOfflineDb(data);
-              // Trigger sync check if token exists
-              if (token && getSyncQueue().length > 0) {
-                syncPendingQueue(token);
-              }
             }).catch(() => {});
-            return response;
           }
+          return response; // Preserve 401 and server errors; cached data must not hide them.
         } catch (netErr) {
           console.warn('[Offline Mode] Network failed fetching /api/data, serving from local cache:', netErr);
         }
@@ -52,6 +52,9 @@ export function setupOfflineInterceptor() {
 
       // Offline Fallback for GET /api/data
       const offlineDb = getOfflineDb();
+      if (!localStorage.getItem('nvf_offline_db_cache_v2') || !token) {
+        return new Response(JSON.stringify({ error: 'No saved farm data is available on this device.' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+      }
       return new Response(JSON.stringify(offlineDb), {
         status: 200,
         statusText: 'OK (Offline Cache)',
@@ -76,7 +79,7 @@ export function setupOfflineInterceptor() {
     if (['POST', 'PUT', 'DELETE'].includes(method) && !urlString.includes('/api/auth/')) {
       if (!navigator.onLine) {
         console.log(`[Offline Mode] Intercepted ${method} ${urlString} - Applying locally & queuing`);
-        const { responseData } = executeLocalMutation(urlString, method, bodyData);
+        const { responseData, offlineQueued } = executeLocalMutation(urlString, method, bodyData);
         if (responseData && (responseData as any).error) {
           return new Response(JSON.stringify(responseData), {
             status: 400,
@@ -85,7 +88,7 @@ export function setupOfflineInterceptor() {
           });
         }
         return new Response(JSON.stringify(responseData), {
-          status: 200,
+          status: offlineQueued ? 202 : 507,
           statusText: 'OK (Saved Offline)',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -111,7 +114,7 @@ export function setupOfflineInterceptor() {
         return response;
       } catch (netError) {
         console.warn(`[Offline Fallback] Server unreachable for ${method} ${urlString}. Storing mutation locally.`, netError);
-        const { responseData } = executeLocalMutation(urlString, method, bodyData);
+        const { responseData, offlineQueued } = executeLocalMutation(urlString, method, bodyData);
         if (responseData && (responseData as any).error) {
           return new Response(JSON.stringify(responseData), {
             status: 400,
@@ -120,7 +123,7 @@ export function setupOfflineInterceptor() {
           });
         }
         return new Response(JSON.stringify(responseData), {
-          status: 200,
+          status: offlineQueued ? 202 : 507,
           statusText: 'OK (Saved Offline)',
           headers: { 'Content-Type': 'application/json' }
         });

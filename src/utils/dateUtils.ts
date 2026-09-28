@@ -50,7 +50,7 @@ export function formatDateDDMMYYYY(dateVal: string | number | Date | null | unde
  */
 export function parseDateToISO(val: any): string {
   if (val === null || val === undefined || val === '') {
-    return new Date().toISOString().split('T')[0];
+    return getCameroonTodayISO();
   }
 
   if (val instanceof Date || Object.prototype.toString.call(val) === '[object Date]') {
@@ -100,7 +100,7 @@ export function parseDateToISO(val: any): string {
     return `${y}-${m}-${day}`;
   }
 
-  return new Date().toISOString().split('T')[0];
+  return getCameroonTodayISO();
 }
 
 export function getCameroonTodayISO(dateObj: Date = new Date()): string {
@@ -111,7 +111,8 @@ export function getCameroonTodayISO(dateObj: Date = new Date()): string {
       month: '2-digit',
       day: '2-digit'
     });
-    return formatter.format(dateObj);
+    const parts = Object.fromEntries(formatter.formatToParts(dateObj).map(part => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
   } catch (e) {
     const d = new Date(dateObj.getTime() + 3600000);
     return d.toISOString().split('T')[0];
@@ -293,4 +294,3 @@ export function parseNumericAgeWeeks(
 
   return 0;
 }
-

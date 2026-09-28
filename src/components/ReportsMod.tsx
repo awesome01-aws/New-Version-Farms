@@ -5,14 +5,14 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
-  BarChart3, DollarSign, ArrowDownRight, ArrowUpRight, CheckCircle, HelpCircle, 
+  BarChart3, DollarSign, ArrowDownRight, ArrowUpRight, CheckCircle,
   MessageSquare, Download, FileSpreadsheet, TrendingUp, Sparkles, Activity, AlertTriangle, FileText, Printer, Filter, X
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
-import { formatDateDDMMYYYY, formatDateShortDDMM, formatFlockAge } from '../utils/dateUtils';
+import { getCameroonTodayISO, formatDateDDMMYYYY, formatDateShortDDMM, formatFlockAge } from '../utils/dateUtils';
 
 export type PdfPeriod = '1_week' | '2_weeks' | '1_month' | '6_months' | '1_year' | 'all_time';
 export type PdfScope = 'all' | 'farm' | 'incubator';
@@ -435,7 +435,7 @@ export function generatePdfReport(
   // Save the PDF
   const filenamePeriod = period.replace('_', '-');
   const filenameScope = scope;
-  const dateStamp = new Date().toISOString().split('T')[0];
+  const dateStamp = getCameroonTodayISO();
   doc.save(`NVF_Farm_Report_${filenameScope}_${filenamePeriod}_${dateStamp}.pdf`);
 }
 
@@ -636,14 +636,16 @@ export default function ReportsMod({ db }: ReportsModProps) {
       setReportNotification({ type: 'warning', message: `There is no row data available in "${tableName}" to export yet.` });
       return;
     }
-    const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(convertToCSV(list));
+    const csvContent = new Blob(['\ufeff', convertToCSV(list)], { type: 'text/csv;charset=utf-8' });
+    const csvUrl = URL.createObjectURL(csvContent);
     const link = document.createElement('a');
-    link.setAttribute('href', csvContent);
-    link.setAttribute('download', `new_version_farms_${tableName}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('href', csvUrl);
+    link.setAttribute('download', `new_version_farms_${tableName}_${getCameroonTodayISO()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    setReportNotification({ type: 'success', message: `Exported ${tableName} (${list.length} rows) successfully!` });
+    window.setTimeout(() => URL.revokeObjectURL(csvUrl), 60_000);
+    setReportNotification({ type: 'success', message: `Download started for ${tableName} (${list.length} rows).` });
   };
 
   return (
@@ -679,20 +681,21 @@ export default function ReportsMod({ db }: ReportsModProps) {
       )}
       
       {/* Selector banner */}
-      <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs flex items-center justify-between">
+      <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
         <div>
-          <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight">Hatchery Metrics & Exports</h2>
-          <p className="text-slate-400 text-xs font-semibold">Review spreadsheets & balances</p>
+          <h2 className="text-2xl font-bold text-emerald-950">Reports</h2>
+          <p className="text-slate-600 text-sm">See farm totals and download your records.</p>
         </div>
         
         <select
           id="report_range_selector"
           value={reportRange}
           onChange={(e) => setReportRange(e.target.value as any)}
-          className="h-10 px-3 border border-slate-200 rounded-xl text-xs font-bold uppercase text-slate-600 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          aria-label="Report period"
+          className="h-12 px-3 border border-emerald-200 rounded-xl text-base font-semibold text-emerald-950 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
         >
-          <option value="all_time text-slate-400 font-semibold">All-Time Full Ops</option>
-          <option value="this_week text-slate-400 font-semibold">Active last 7 Days</option>
+          <option value="all_time">All time</option>
+          <option value="this_week">Last 7 days</option>
         </select>
       </div>
 
@@ -706,14 +709,14 @@ export default function ReportsMod({ db }: ReportsModProps) {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] uppercase tracking-widest font-extrabold px-3 py-1 rounded-full inline-flex items-center gap-1 mb-2">
-                <Sparkles size={12} /> Printable Executive PDF
+                <Sparkles size={12} /> Printable PDF
               </span>
               <h3 className="text-xl font-black text-white uppercase tracking-tight flex items-center gap-2">
                 <Printer size={22} className="text-emerald-400" />
-                Download PDF Summary Report
+                Download report
               </h3>
               <p className="text-slate-300 text-xs font-medium mt-0.5">
-                Generates a tabulator summary with graphs for Whole Farm & Incubator ops.
+                Save a summary of your farm and incubator records.
               </p>
             </div>
           </div>
@@ -962,10 +965,10 @@ export default function ReportsMod({ db }: ReportsModProps) {
       <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs">
         <h3 className="text-base font-black text-slate-800 uppercase tracking-tight flex items-center gap-2 mb-1.5">
           <Download size={16} className="text-teal-600" />
-          1-Click Backup Export Control
+          Download spreadsheets
         </h3>
         <p className="text-slate-400 text-xs font-semibold mb-5">
-          Download high-compat CSV spreadsheets compatible with Google Sheets & MS Excel.
+          Save CSV files that open in spreadsheet apps.
         </p>
 
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -974,7 +977,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">1. Clients List</span>
+            <span className="text-xs font-black text-slate-800">Clients</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.clients.length} rows</span>
           </button>
 
@@ -983,7 +986,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">2. Incubator Batches</span>
+            <span className="text-xs font-black text-slate-800">Egg batches</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.incubator_records.length} rows</span>
           </button>
 
@@ -992,7 +995,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">3. Brahma Flocks</span>
+            <span className="text-xs font-black text-slate-800">Flocks</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.flocks.length} rows</span>
           </button>
 
@@ -1001,7 +1004,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">4. Poultry Sales</span>
+            <span className="text-xs font-black text-slate-800">Sales</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.poultry_sales.length} rows</span>
           </button>
 
@@ -1010,7 +1013,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">5. Feed Purchases</span>
+            <span className="text-xs font-black text-slate-800">Feed</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.feed_records.length} rows</span>
           </button>
 
@@ -1019,7 +1022,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 hover:bg-teal-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-teal-600" />
-            <span className="text-xs font-black text-slate-800">6. Expenses Log</span>
+            <span className="text-xs font-black text-slate-800">Expenses</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.expenses.length} rows</span>
           </button>
 
@@ -1028,81 +1031,12 @@ export default function ReportsMod({ db }: ReportsModProps) {
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-rose-200 hover:bg-rose-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-rose-600" />
-            <span className="text-xs font-black text-slate-800">7. Poultry Mortality</span>
+            <span className="text-xs font-black text-slate-800">Bird loss</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.mortality.length} rows</span>
           </button>
         </div>
 
-        {/* Integration instructions */}
-        <div className="mt-6 p-4 bg-slate-50 border border-slate-150 rounded-2xl">
-          <h4 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1 mb-1.5">
-            <HelpCircle size={14} className="text-slate-400" />
-            Future Spreadsheet Import Instructions
-          </h4>
-          <ol className="text-[12px] leading-relaxed text-slate-600 list-decimal pl-4.5 space-y-1 font-medium">
-            <li>Open **Google Sheets** (`sheets.google.com`) or MS Excel on your laptop.</li>
-            <li>Go to **File** → **Import** → **Upload** and pick the exported CSV file.</li>
-            <li>Choose **Replace current sheet** or **Insert new sheet**, and set separator character to **Comma** (Auto-detect works as well!).</li>
-            <li>To import back to the application in future releases, format spreadsheet columns exactly as the headers in these CSV files and save as `.csv` format before parsing.</li>
-          </ol>
-        </div>
-        
-        {/* DEVELOPER EXTENSIBILITY HUB */}
-        <div className="mt-6 p-5 bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-950 rounded-2xl text-slate-100 shadow-xl space-y-4 text-left">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">⚡</span>
-            <div>
-              <h4 className="text-sm font-black text-white uppercase tracking-wider">
-                Developer Extensibility & Future Feature Hub
-              </h4>
-              <p className="text-slate-400 text-[11px] font-medium">
-                Want to add something new? Learn how the applet can be easily configured and expanded.
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-3.5 pt-1 text-[12px]">
-            <div className="p-3 bg-white/5 rounded-xl border border-white/5">
-              <h5 className="font-bold text-teal-400 uppercase tracking-widest text-[10px] mb-1">
-                📂 1. Adding New Data Fields
-              </h5>
-              <p className="text-slate-300 leading-relaxed font-medium">
-                Open <code className="font-mono text-emerald-300 text-xs py-0.5 px-1 bg-white/5 rounded">/src/types.ts</code> to extend schemas. To store custom records (e.g., Vaccinations or Egg-laying charts), add a new interface and add an array in the <code className="font-mono text-emerald-300 text-xs py-0.5 px-1 bg-white/5 rounded">DbSchema</code> model.
-              </p>
-            </div>
-
-            <div className="p-3 bg-white/5 rounded-xl border border-white/5">
-              <h5 className="font-bold text-teal-400 uppercase tracking-widest text-[10px] mb-1">
-                ⚙️ 2. Adding Backend Actions / API Endpoints
-              </h5>
-              <p className="text-slate-300 leading-relaxed font-semibold">
-                Open <code className="font-mono text-emerald-300 text-xs py-0.5 px-1 bg-white/5 rounded">server.ts</code>. Simply add express route handlers like:
-              </p>
-              <pre className="mt-1.5 p-2 bg-black/40 rounded-lg text-[10px] text-teal-300 font-mono overflow-x-auto leading-normal">
-{`app.post("/api/new-feature", (req, res) => {
-  const db = loadDb();
-  db.new_records.push(req.body);
-  saveDb(db);
-  res.json({ success: true });
-});`}
-              </pre>
-            </div>
-
-            <div className="p-3 bg-white/5 rounded-xl border border-white/5">
-              <h5 className="font-bold text-teal-400 uppercase tracking-widest text-[10px] mb-1">
-                🎨 3. Rendering New Tabs or Forms
-              </h5>
-              <p className="text-slate-300 leading-relaxed font-medium">
-                Add a new component inside <code className="font-mono text-emerald-300 text-xs py-0.5 px-1 bg-white/5 rounded">/src/components/</code> (e.g., <code className="font-mono text-white text-xs">VaccinesMod.tsx</code>), register it in <code className="font-mono text-white text-xs">App.tsx</code>'s tab controller state, and link it to the fixed bottom navigation bar!
-              </p>
-            </div>
-          </div>
-
-          <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400 font-bold">
-            <span>🚀 Full-Stack Express + React Architecture</span>
-            <span className="text-emerald-400">Created for New Vision Farms Cameroon</span>
-          </div>
-        </div>
+        <p className="mt-5 text-sm text-slate-600">Choose a record type to save its CSV file to this device.</p>
 
       </div>
 

@@ -6,15 +6,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ActiveTab, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, CageTransfer, DailyEggCollection, FowlEatenRecord } from './types';
 import Login from './components/Login';
+import { getCameroonTodayISO } from './utils/dateUtils';
 import Navbar from './components/Navbar';
-import HomeMod from './components/HomeMod';
-import PoultryMod from './components/PoultryMod';
-import IncubatorMod from './components/IncubatorMod';
-import ReportsMod from './components/ReportsMod';
+import HomeDashboard from './components/HomeDashboard';
+const PoultryMod = React.lazy(() => import('./components/PoultryMod'));
+const IncubatorMod = React.lazy(() => import('./components/IncubatorMod'));
+const ReportsMod = React.lazy(() => import('./components/ReportsMod'));
 import { RefreshCw, Sparkles } from 'lucide-react';
-import NotificationHub from './components/NotificationHub';
-import ExcelImportModal from './components/ExcelImportModal';
-import GlobalSearchModal from './components/GlobalSearchModal';
+const NotificationHub = React.lazy(() => import('./components/NotificationHub'));
+const ExcelImportModal = React.lazy(() => import('./components/ExcelImportModal'));
+const GlobalSearchModal = React.lazy(() => import('./components/GlobalSearchModal'));
 import Footer from './components/Footer';
 
 export default function App() {
@@ -76,7 +77,7 @@ export default function App() {
   }, []);
 
   // Derive unread/active notifications count for Day 18, Day 21, and 6 PM Egg Collection
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getCameroonTodayISO();
   const todayTime = new Date(todayStr).getTime();
   const currentHour = new Date().getHours();
   const hasEggRecordToday = (db.daily_egg_collections || []).some(rec => rec.date === todayStr);
@@ -179,6 +180,7 @@ export default function App() {
 
   // Handle Logout
   const handleLogout = () => {
+    if (token) fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: token } }).catch(() => {});
     localStorage.removeItem('nvf_operator_token');
     localStorage.removeItem('nvf_operator_user');
     setToken(null);
@@ -267,13 +269,12 @@ export default function App() {
           </div>
         )}
 
+        <React.Suspense fallback={<div role="status" className="rounded-2xl bg-white p-6 text-emerald-900">Loading farm records…</div>}>
         {/* Tab Router Switch */}
         {activeTab === 'home' && (
-          <HomeMod 
-            db={db} 
-            triggerRefresh={() => token && syncDatabase(token, true)} 
-            isLoading={isLoading} 
-            onOpenEditRecord={handleOpenEditRecord}
+          <HomeDashboard
+            db={db}
+            currentUserName={currentUser?.name}
             setActiveTab={setActiveTab}
             onTriggerQuickForm={handleTriggerQuickForm}
           />
@@ -306,6 +307,7 @@ export default function App() {
         {activeTab === 'reports' && (
           <ReportsMod db={db} />
         )}
+        </React.Suspense>
 
         {/* Global Page Footer */}
         <Footer />
@@ -314,25 +316,26 @@ export default function App() {
 
 
       {/* Excel & CSV Import Wizard Modal */}
-      <ExcelImportModal
+      <React.Suspense fallback={null}>
+      {isExcelImportOpen && <ExcelImportModal
         isOpen={isExcelImportOpen}
         onClose={() => setIsExcelImportOpen(false)}
         token={token}
         triggerRefresh={() => token && syncDatabase(token, true)}
-      />
+      />}
 
       {/* Global Command Search Modal */}
-      <GlobalSearchModal
+      {isGlobalSearchOpen && <GlobalSearchModal
         isOpen={isGlobalSearchOpen}
         onClose={() => setIsGlobalSearchOpen(false)}
         db={db}
         setActiveTab={setActiveTab}
         onOpenEditRecord={handleOpenEditRecord}
         onOpenClient={handleOpenClient}
-      />
+      />}
 
       {/* Modern sliding notifications hub drawer overlay */}
-      <NotificationHub 
+      {isNotificationHubOpen && <NotificationHub 
         db={db} 
         isOpen={isNotificationHubOpen} 
         onClose={() => setIsNotificationHubOpen(false)} 
@@ -341,7 +344,8 @@ export default function App() {
           setActiveTab('farm');
           setQuickFormKey('egg_collection');
         }}
-      />
+      />}
+      </React.Suspense>
     </div>
   );
 }

@@ -17,7 +17,7 @@ import { computeAmountDue, getStandardRateBySpecies } from '../lib/offlineStore'
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
 import { parseExcelDate, downloadExcelTemplate } from './ExcelImportModal';
-import { formatDateDDMMYYYY } from '../utils/dateUtils';
+import { getCameroonTodayISO, formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface IncubatorModProps {
   data: {
@@ -498,10 +498,10 @@ export const HatchingAnalyticsSection: React.FC<{ records: IncubatorRecord[] }> 
         rec,
         dt: parseRecordDate(rec.dateBrought || rec.day8Date || rec.day21Date),
         collected: Number(rec.eggsCollected) || 0,
-        scanned: (rec.eggsAfterScan !== null && rec.eggsAfterScan !== undefined && rec.eggsAfterScan !== '')
+        scanned: (rec.eggsAfterScan !== null && rec.eggsAfterScan !== undefined)
           ? Number(rec.eggsAfterScan)
-          : (rec.chicksHatched !== null && rec.chicksHatched !== undefined && rec.chicksHatched !== '' ? Number(rec.eggsCollected) : 0),
-        hatched: (rec.chicksHatched !== null && rec.chicksHatched !== undefined && rec.chicksHatched !== '')
+          : (rec.chicksHatched !== null && rec.chicksHatched !== undefined ? Number(rec.eggsCollected) : 0),
+        hatched: (rec.chicksHatched !== null && rec.chicksHatched !== undefined)
           ? Number(rec.chicksHatched)
           : 0,
       }))
@@ -706,6 +706,7 @@ export default function IncubatorMod({
   // Collapse controllers
   const [showClientForm, setShowClientForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
+  const [showAdvancedRecords, setShowAdvancedRecords] = useState(false);
 
   // Sorting configurations
   // Options: 'newest_brought' | 'oldest_brought' | 'client_name_az' | 'amount_owed_desc' | 'egg_type' | 'hatcher_transit' | 'to_candle' | 'just_hatched'
@@ -908,7 +909,7 @@ export default function IncubatorMod({
     }
     setIsClientDropdownOpen(false);
   };
-  const [batchDate, setBatchDate] = useState(new Date().toISOString().split('T')[0]);
+  const [batchDate, setBatchDate] = useState(getCameroonTodayISO());
   const [batchEggs, setBatchEggs] = useState('');
   const [batchSpecialCase, setBatchSpecialCase] = useState<SpecialCase>('Standard');
   const [batchCustomRate, setBatchCustomRate] = useState('');
@@ -1035,7 +1036,7 @@ export default function IncubatorMod({
   useEffect(() => {
     if (localEditRecord) {
       setEditDateBrought(localEditRecord.dateBrought || '');
-      setEditEggType(localEditRecord.eggType || 'Brahma');
+      setEditEggType(['Brahma', 'Turkey', 'Quail', 'Goose'].includes(localEditRecord.eggType || '') ? localEditRecord.eggType as 'Brahma' | 'Turkey' | 'Quail' | 'Goose' : 'Brahma');
       setEditEggsCollected(localEditRecord.eggsCollected !== undefined ? String(localEditRecord.eggsCollected) : '');
       setEditSpecialCase(localEditRecord.specialCase || 'Standard');
       setEditCustomRate(localEditRecord.ratePerEgg !== undefined ? String(localEditRecord.ratePerEgg) : '200');
@@ -1849,7 +1850,7 @@ export default function IncubatorMod({
       return true;
     });
 
-    const todayTime = new Date(new Date().toISOString().split('T')[0]).getTime();
+    const todayTime = new Date(getCameroonTodayISO()).getTime();
 
     const sortedItems = [...filtered].sort((itemA, itemB) => {
       const a = itemA.rec;
@@ -2038,42 +2039,42 @@ export default function IncubatorMod({
     <div id="incubator_tab" className="space-y-6 pb-28">
       
       {/* Sub Tabs Toggle (Records vs Clients vs Import) */}
-      <div className="flex bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/60 shadow-inner space-x-1.5">
+      <div className="flex bg-emerald-50 p-1.5 rounded-2xl border border-emerald-100 space-x-1.5">
         <button
           id="tab_sub_records"
           onClick={() => { setActiveTabSub('records'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+          className={`flex-1 min-h-12 py-2 px-2 text-center rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
             activeTabSub === 'records'
               ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
           <Egg size={16} className={activeTabSub === 'records' ? 'text-emerald-600' : 'text-slate-400'} />
-          <span>Egg Batches & Calendar</span>
+          <span>Batches</span>
         </button>
         <button
           id="tab_sub_clients"
           onClick={() => { setActiveTabSub('clients'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+          className={`flex-1 min-h-12 py-2 px-2 text-center rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
             activeTabSub === 'clients'
               ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
           <User size={16} className={activeTabSub === 'clients' ? 'text-emerald-600' : 'text-slate-400'} />
-          <span>Client Directory ({data.clients.length})</span>
+          <span>Clients ({data.clients.length})</span>
         </button>
         <button
           id="tab_sub_import"
           onClick={() => { setActiveTabSub('import'); setErrorMsg(''); setSuccessMsg(''); }}
-          className={`flex-1 py-2.5 px-4 text-center rounded-xl font-bold text-xs tracking-wide transition-all cursor-pointer flex items-center justify-center gap-2 ${
+          className={`flex-1 min-h-12 py-2 px-2 text-center rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
             activeTabSub === 'import'
               ? 'bg-white text-emerald-800 shadow-sm font-extrabold ring-1 ring-slate-900/5'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
           <FileText size={16} className={activeTabSub === 'import' ? 'text-emerald-600' : 'text-slate-400'} />
-          <span>Import Excel</span>
+          <span>Import</span>
         </button>
       </div>
 
@@ -2550,22 +2551,23 @@ export default function IncubatorMod({
       {/* SUB TAB: EGG BATCHES */}
       {activeTabSub === 'records' && (
         <div id="records_subtab" className="space-y-6">
+          <div><h1 className="text-2xl font-bold text-emerald-950">Egg batches</h1><p className="text-sm text-slate-600">Add eggs, then follow each batch until hatching.</p></div>
           
           {/* Create Batch Card */}
           <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Incubator Entry (New Egg Batch)</h3>
-                <p className="text-slate-400 text-xs font-semibold">Log eggs delivered by client</p>
+                <h3 className="text-lg font-bold text-slate-900">New egg batch</h3>
+                <p className="text-slate-600 text-sm">Record eggs delivered by a client.</p>
               </div>
               <button
                 id="toggle_batch_form"
                 onClick={() => setShowBatchForm(!showBatchForm)}
-                className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                className={`cursor-pointer min-h-11 px-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-colors ${
                   showBatchForm ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
                 }`}
               >
-                {showBatchForm ? <Minus size={20} /> : <Plus size={20} />}
+                {showBatchForm ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add batch</>}
               </button>
             </div>
 
@@ -2591,7 +2593,7 @@ export default function IncubatorMod({
                 {/* Searchable Client Account Combobox */}
                 <div className="relative" ref={clientDropdownRef}>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">
-                    Select or Type Client Account (Name or Mark)
+                    1. Choose a client
                   </label>
                   <div className="relative flex items-center">
                     <div className="absolute left-3.5 text-slate-400 pointer-events-none">
@@ -2693,22 +2695,21 @@ export default function IncubatorMod({
                   )}
 
                   {/* Prompt Notice when typed client is not registered / not found */}
-                  {clientSearchQuery.trim() !== '' && !batchClientId && filteredBatchClients.length === 0 && (
+                  {(data.clients.length === 0 || (clientSearchQuery.trim() !== '' && !batchClientId && filteredBatchClients.length === 0)) && (
                     <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200/90 rounded-xl text-xs font-medium text-amber-900 flex items-start gap-2 shadow-2xs">
                       <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
                       <div className="leading-snug">
-                        <span>client not found make sure you spelled clients name (MARK) correctly or if its a new client register him/her in the </span>
+                        <span>{data.clients.length === 0 ? 'Add a client before recording their eggs. ' : 'No matching client. Check the name or '}</span>
                         <button
                           type="button"
                           onClick={() => {
                             setActiveTabSub('clients');
                             setShowClientForm(true);
-                            const clientSection = document.getElementById('client_tab_section') || document.getElementById('client_management_section');
-                            if (clientSection) clientSection.scrollIntoView({ behavior: 'smooth' });
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
                           }}
                           className="underline font-bold text-amber-950 hover:text-amber-700 cursor-pointer"
                         >
-                          clients tab in the middle
+                          add a new client
                         </button>
                       </div>
                     </div>
@@ -3001,6 +3002,7 @@ export default function IncubatorMod({
             )}
           </div>
 
+          {totalBatchesCount === 0 ? <div className="rounded-2xl border border-emerald-100 bg-white p-6 text-center"><Egg size={30} className="text-emerald-700 mx-auto"/><h3 className="text-lg font-bold mt-3">No egg batches yet</h3><p className="text-sm text-slate-600 mt-1">Add the first batch to start tracking incubation.</p><button type="button" onClick={() => setShowBatchForm(true)} className="mt-4 min-h-11 px-5 rounded-xl bg-emerald-700 text-white font-bold">Add egg batch</button></div> : <>
           {/* Table Management Dashboard */}
           <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs">
             
@@ -3025,8 +3027,9 @@ export default function IncubatorMod({
               </div>
             </div>
             
+            <button type="button" onClick={() => setShowAdvancedRecords(!showAdvancedRecords)} className="min-h-11 px-4 mb-4 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 font-semibold">{showAdvancedRecords ? 'Hide filters' : 'More filters'}</button>
             {/* Filter Search & Batch Status Filter Component */}
-            <div className="flex flex-col gap-3 mb-5">
+            <div hidden={!showAdvancedRecords} className="flex flex-col gap-3 mb-5">
               <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
                 <div className="relative flex-1">
                   <input
@@ -3439,7 +3442,7 @@ export default function IncubatorMod({
                       const isSelected = selectedRecordIds.includes(rec.id);
 
                       // Detailed status calculations for visual prioritization
-                      const rTodayTime = new Date(new Date().toISOString().split('T')[0]).getTime();
+                      const rTodayTime = new Date(getCameroonTodayISO()).getTime();
                       const rBroughtTime = new Date(rec.dateBrought).getTime();
                       const rDaysPassed = Math.floor((rTodayTime - rBroughtTime) / (24 * 60 * 60 * 1000));
                       const rSpecies = rec.eggType || 'Brahma';
@@ -3654,7 +3657,7 @@ export default function IncubatorMod({
           </div>
 
           {/* WEEKLY TOTALS SUMMARY TABLE (Mon-Sun calculated from incubator batch inputs) */}
-          <div className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-4 text-left">
+          <div hidden={!showAdvancedRecords} className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-4 text-left">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <div className="flex items-center gap-2">
@@ -3707,7 +3710,7 @@ export default function IncubatorMod({
                                 <td className="p-3 font-bold text-yellow-900">{row.totalScan.toLocaleString()}</td>
                                 <td className="p-3 font-bold text-emerald-800">{row.totalHatched.toLocaleString()}</td>
                                 <td className="p-3 font-mono font-bold text-emerald-800 text-right">{row.revenue.toLocaleString()} FCFA</td>
-                                <td className="p-3 font-mono text-blue-700 text-right">{row.overdraftGenerated > 0 ? `+${row.overdraftGenerated.toLocaleString()}` : '0'} FCFA</td>
+                                <td className="p-3 font-mono text-blue-700 text-right">{row.overdraft > 0 ? `+${row.overdraft.toLocaleString()}` : '0'} FCFA</td>
                                 <td className="p-3 font-mono font-bold text-rose-700 text-right">{row.debt > 0 ? `${row.debt.toLocaleString()} FCFA` : '0 FCFA'}</td>
                               </tr>
                             ))}
@@ -3904,7 +3907,8 @@ export default function IncubatorMod({
           </div>
 
           {/* Real-time Hatching Percentage Circular Analytics Feature */}
-          <HatchingAnalyticsSection records={data.incubator_records} />
+          {showAdvancedRecords && <HatchingAnalyticsSection records={data.incubator_records} />}
+          </>}
         </div>
       )}
 
@@ -4846,7 +4850,6 @@ export default function IncubatorMod({
             <div 
               style={{ 
                 zoom: fullscreenZoom / 100,
-                WebkitZoom: fullscreenZoom / 100,
                 transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
               }}
               className="w-full h-full min-w-full"
@@ -5719,7 +5722,6 @@ export function ClientLedger({
             <div 
               style={{ 
                 zoom: fullscreenZoom / 100,
-                WebkitZoom: fullscreenZoom / 100,
                 transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
               }}
               className="w-full h-full min-w-full"

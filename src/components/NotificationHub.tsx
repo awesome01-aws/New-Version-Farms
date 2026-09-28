@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, BellOff, X, Phone, MessageSquare, ArrowRight, CheckCircle2, ShieldAlert, Egg } from 'lucide-react';
 import { IncubatorRecord, DailyEggCollection } from '../types';
-import { formatDateDDMMYYYY } from '../utils/dateUtils';
+import { getCameroonTodayISO, formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface NotificationHubProps {
   db: {
@@ -36,7 +36,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
   const sentWebNotificationsRef = useRef<Set<string>>(new Set());
 
   // Derive notifications list in real-time
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getCameroonTodayISO();
   const todayTime = new Date(todayStr).getTime();
 
   const getActiveNotifications = (): ActiveNotification[] => {
@@ -366,3 +366,4 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     </div>
   );
 }
+

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { getCameroonTodayISO } from '../utils/dateUtils';
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, ArrowRight, Table, Download, X, Layers, Users, Sparkles } from 'lucide-react';
@@ -28,7 +29,7 @@ export type ImportTargetCategory =
 // Helper to parse Excel numeric dates, JS Date objects, or date strings into ISO YYYY-MM-DD
 export function parseExcelDate(val: any): string {
   if (val === null || val === undefined || val === '') {
-    return new Date().toISOString().split('T')[0];
+    return getCameroonTodayISO();
   }
 
   // 1. Handle JS Date objects (e.g. from SheetJS cellDates)
@@ -132,7 +133,7 @@ export function parseExcelDate(val: any): string {
     return `${y}-${m}-${day}`;
   }
 
-  return new Date().toISOString().split('T')[0];
+  return getCameroonTodayISO();
 }
 
 // Global Template Generator Function for All Tables
@@ -403,7 +404,7 @@ function parseStockRow(row: any[], headers: string[]): Array<{
 
   // Calculate Age in Weeks
   let ageWeeks = 0;
-  let computedDateAdded = new Date().toISOString().split('T')[0];
+  let computedDateAdded = getCameroonTodayISO();
 
   if (typeof hatchDateRaw === 'number' && hatchDateRaw > 1000) {
     computedDateAdded = parseExcelDate(hatchDateRaw);
@@ -1300,3 +1301,4 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
     </div>
   );
 }
+

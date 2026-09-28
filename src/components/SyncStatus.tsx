@@ -36,7 +36,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
 
     const handleOffline = () => {
       setIsOnline(false);
-      setToastMessage('Offline mode active. All new entries will be saved locally.');
+      setToastMessage('Offline. Supported changes stay on this phone until the server accepts them.');
       setTimeout(() => setToastMessage(null), 5000);
     };
 
@@ -119,7 +119,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
               ? 'Working Offline - Click to view queued changes'
               : pendingQueue.length > 0
               ? `${pendingQueue.length} unsynced changes - Click to view`
-              : 'Online & Fully Synced'
+              : 'Internet connected; no changes waiting on this phone'
           }
         >
           {isSyncing ? (
@@ -186,7 +186,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
               ? 'You are currently offline. All edits and new records are saved locally and will auto-sync when internet returns.'
               : pendingQueue.length > 0
               ? 'You have offline changes queued for synchronization.'
-              : 'All your data is completely synced with the server.'}
+              : 'No changes are waiting on this phone. Other family devices update through the shared server.'}
           </p>
 
           {/* Pending Sync Queue List */}

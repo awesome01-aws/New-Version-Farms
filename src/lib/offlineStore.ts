@@ -4,6 +4,7 @@
  */
 
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
+import { getCameroonTodayISO } from '../utils/dateUtils';
 
 export interface DbData {
   users?: any[];
@@ -28,6 +29,8 @@ export interface QueuedMutation {
 
 const DB_CACHE_KEY = 'nvf_offline_db_cache_v2';
 const SYNC_QUEUE_KEY = 'nvf_offline_sync_queue_v2';
+// Capture the browser transport before api.ts installs its offline interceptor.
+const networkFetch = window.fetch.bind(window);
 
 // Event emitter helpers
 export function notifyOfflineChange(status?: string) {
@@ -130,12 +133,8 @@ export function getOfflineDb(): DbData {
 }
 
 export function saveOfflineDb(db: DbData): void {
-  try {
-    localStorage.setItem(DB_CACHE_KEY, JSON.stringify(db));
-    notifyOfflineChange();
-  } catch (err) {
-    console.error('Failed to write offline DB cache:', err);
-  }
+  localStorage.setItem(DB_CACHE_KEY, JSON.stringify(db));
+  notifyOfflineChange();
 }
 
 // 2. Pending Sync Queue Operations
@@ -152,12 +151,8 @@ export function getSyncQueue(): QueuedMutation[] {
 }
 
 export function saveSyncQueue(queue: QueuedMutation[]): void {
-  try {
-    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
-    notifyOfflineChange();
-  } catch (err) {
-    console.error('Failed to write sync queue:', err);
-  }
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+  notifyOfflineChange();
 }
 
 export function queueMutation(mutation: Omit<QueuedMutation, 'id' | 'timestamp'>): QueuedMutation {
@@ -198,7 +193,7 @@ export function executeLocalMutation(
         breed: String(body.breed || '').trim(),
         quantity: Number(body.quantity || 0),
         ageWeeks: Number(body.ageWeeks || 0),
-        dateAdded: String(body.dateAdded || new Date().toISOString().split('T')[0]),
+        dateAdded: String(body.dateAdded || getCameroonTodayISO()),
         species: body.species || 'Chicken',
         notes: body.notes ? String(body.notes).trim() : ''
       };
@@ -234,7 +229,7 @@ export function executeLocalMutation(
       const costBag = Number(body.costBag || 0);
       const newFeed: FeedRecord = {
         id: feedId,
-        date: String(body.date || new Date().toISOString().split('T')[0]),
+        date: String(body.date || getCameroonTodayISO()),
         feedType: String(body.feedType || '').trim(),
         bagsBought,
         weightPerBag: Number(body.weightPerBag || 50),
@@ -278,7 +273,7 @@ export function executeLocalMutation(
       }
       const newSale: PoultrySale = {
         id: saleId,
-        date: String(body.date || new Date().toISOString().split('T')[0]),
+        date: String(body.date || getCameroonTodayISO()),
         itemType: body.itemType,
         quantity: qty,
         unitPrice: price,
@@ -321,7 +316,7 @@ export function executeLocalMutation(
       }
       const newMort: Mortality = {
         id: mortId,
-        date: String(body.date || new Date().toISOString().split('T')[0]),
+        date: String(body.date || getCameroonTodayISO()),
         flockId: String(body.flockId),
         flockName: flock ? flock.name : 'Flock',
         quantity: qty,
@@ -352,7 +347,7 @@ export function executeLocalMutation(
       const expId = body.id || crypto.randomUUID();
       const newExp: Expense = {
         id: expId,
-        date: String(body.date || new Date().toISOString().split('T')[0]),
+        date: String(body.date || getCameroonTodayISO()),
         category: body.category,
         description: String(body.description || '').trim(),
         amount: Number(body.amount || 0)
@@ -630,10 +625,11 @@ export function executeLocalMutation(
       }
     }
 
-    // Save updated DB state locally
-    saveOfflineDb(db);
+    if (description === `${method} ${endpoint}`) {
+      return { responseData: { success: false, error: 'This action needs a connection. Please try again online.' }, offlineQueued: false };
+    }
 
-    // Queue mutation for online sync
+    // Persist the queue before showing a local success. A full phone storage area must fail visibly.
     queueMutation({
       endpoint,
       method: method as any,
@@ -641,6 +637,7 @@ export function executeLocalMutation(
       type: endpoint.split('/')[2] || 'record',
       description
     });
+    saveOfflineDb(db);
 
     return { responseData, offlineQueued: true };
   } catch (err) {
@@ -650,45 +647,20 @@ export function executeLocalMutation(
 }
 
 // 4. Synchronization Engine
+let syncInProgress = false;
 export async function syncPendingQueue(token: string): Promise<{ success: boolean; syncedCount: number }> {
-  const queue = getSyncQueue();
+  if (syncInProgress) return { success: false, syncedCount: 0 };
+  const queue = getSyncQueue().sort((a, b) => a.timestamp - b.timestamp);
   if (queue.length === 0) {
     return { success: true, syncedCount: 0 };
   }
 
+  syncInProgress = true;
   notifyOfflineChange('Syncing changes...');
-
-  try {
-    // Attempt batch sync endpoint first
-    const res = await fetch('/api/sync', {
-      method: 'POST',
-      headers: {
-        'Authorization': token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ items: queue })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.db) {
-        saveOfflineDb(data.db);
-      }
-      clearSyncQueue();
-      notifyOfflineChange('Synced successfully');
-      return { success: true, syncedCount: data.processedCount || queue.length };
-    }
-  } catch (syncErr) {
-    console.warn('Batch /api/sync endpoint unavailable, trying individual queue replay:', syncErr);
-  }
-
-  // Fallback: Replay queued items sequentially
   let synced = 0;
-  const remainingQueue: QueuedMutation[] = [];
-
-  for (const item of queue) {
-    try {
-      const response = await fetch(item.endpoint, {
+  try {
+    for (const item of queue) {
+      const response = await networkFetch(item.endpoint, {
         method: item.method,
         headers: {
           'Authorization': token,
@@ -697,32 +669,30 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
         body: item.body ? JSON.stringify(item.body) : undefined
       });
 
-      if (response.ok || response.status === 404) {
-        synced++;
-      } else {
-        remainingQueue.push(item);
-      }
-    } catch (err) {
-      remainingQueue.push(item);
-      break; // Network still disconnected
+      if (!response.ok) break;
+      // Remove only this acknowledged operation. Keep operations added while sync is running.
+      saveSyncQueue(getSyncQueue().filter(queued => queued.id !== item.id));
+      synced++;
     }
+  } catch (err) {
+    console.warn('Pending changes remain on this device:', err);
+  } finally {
+    syncInProgress = false;
   }
-
-  saveSyncQueue(remainingQueue);
-
-  if (remainingQueue.length === 0) {
+  const remaining = getSyncQueue().length;
+  if (remaining === 0) {
     notifyOfflineChange('Synced successfully');
     // Fetch fresh database snapshot from server
     try {
-      const dataRes = await fetch('/api/data', { headers: { 'Authorization': token } });
+      const dataRes = await networkFetch('/api/data', { headers: { 'Authorization': token } });
       if (dataRes.ok) {
         const freshDb = await dataRes.json();
         saveOfflineDb(freshDb);
       }
     } catch (e) {}
   } else {
-    notifyOfflineChange(`${remainingQueue.length} items remaining in offline queue`);
+    notifyOfflineChange(`${remaining} changes still waiting to sync`);
   }
 
-  return { success: remainingQueue.length === 0, syncedCount: synced };
+  return { success: remaining === 0, syncedCount: synced };
 }

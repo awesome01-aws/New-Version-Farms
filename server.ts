@@ -12,11 +12,16 @@ import XLSX from "xlsx";
 import { initializeApp, setLogLevel } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc, terminate } from "firebase/firestore";
 
+function cameroonDate(date: Date = new Date()): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 // Silence Firebase SDK internal logging
 setLogLevel("silent");
 
 // Ensure data folder exists
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = process.env.NVF_DATA_DIR || path.join(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -66,7 +71,7 @@ if (!fs.existsSync(BACKUPS_DIR)) {
 function triggerBackup() {
   try {
     if (fs.existsSync(DB_FILE)) {
-      const todayStr = new Date().toISOString().split("T")[0];
+      const todayStr = cameroonDate();
       const backupPath = path.join(BACKUPS_DIR, `db_backup_${todayStr}.json`);
       fs.copyFileSync(DB_FILE, backupPath);
       console.log(`[Daily Auto-Backup] Successfully backed up database to: ${backupPath}`);
@@ -168,7 +173,7 @@ function parseExcelFlocksAndAllocations() {
     const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
     const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
+    const todayStr = cameroonDate(today);
 
     const parseDateOrAge = (val: any) => {
       if (!val) return { ageWeeks: 0, initialAgeWeeks: 0, hatchDate: todayStr };
@@ -505,7 +510,7 @@ function isValidPositiveNumber(val: any): boolean {
 // Helper to normalize any date input (DD/MM/YYYY, D/M/YYYY, etc.) to ISO YYYY-MM-DD
 export function normalizeDateStringToISO(val: any): string {
   if (val === null || val === undefined || val === '') {
-    return new Date().toISOString().split('T')[0];
+    return cameroonDate();
   }
 
   const str = String(val).trim();
@@ -573,7 +578,7 @@ export function normalizeDateStringToISO(val: any): string {
     return `${y}-${m}-${day}`;
   }
 
-  return new Date().toISOString().split('T')[0];
+  return cameroonDate();
 }
 
 // Helper to determine standard incubator pricing based on egg species
@@ -656,27 +661,31 @@ export const computeAmountDue = (record: {
 
 let cachedDb: any = null;
 let firestoreSyncTimer: NodeJS.Timeout | null = null;
+let firestoreWriteQueue = Promise.resolve();
 
 function loadDb(): any {
   if (cachedDb) {
-    return cachedDb;
+    return structuredClone(cachedDb);
   }
 
   if (!fs.existsSync(DB_FILE)) {
     const initial = getInitialDb();
-    const tmpFile = DB_FILE + ".tmp";
+    const tmpFile = `${DB_FILE}.${crypto.randomUUID()}.tmp`;
     try {
       fs.writeFileSync(tmpFile, JSON.stringify(initial, null, 2), "utf-8");
       fs.renameSync(tmpFile, DB_FILE);
-    } catch (_) {}
+    } catch (err) {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      throw err;
+    }
     cachedDb = initial;
   } else {
     try {
       const content = fs.readFileSync(DB_FILE, "utf-8");
       cachedDb = JSON.parse(content);
     } catch (err) {
-      console.error("Failed to parse database file, returning initial state:", err);
-      cachedDb = getInitialDb();
+      console.error("Failed to read database file; refusing to replace existing farm records:", err);
+      throw err;
     }
   }
 
@@ -695,15 +704,7 @@ function loadDb(): any {
   if (!Array.isArray(db.daily_egg_collections)) db.daily_egg_collections = [];
   if (!Array.isArray(db.fowls_eaten)) db.fowls_eaten = [];
 
-  // Ensure flocks & allocations are populated from Excel if empty
-  const isOutdatedOrCorrupted = !db.flocks || !Array.isArray(db.flocks) || db.flocks.length === 0;
-  if (isOutdatedOrCorrupted) {
-    console.log("[Database Engine] Clearing corrupted/outdated flocks state and re-seeding from Excel...");
-    const initial = getInitialDb();
-    db.flocks = initial.flocks;
-    db.cage_allocations = initial.cage_allocations;
-    db.cages = initial.cages;
-  }
+  // An intentionally empty flock list is valid. Seeding happens only when a new DB is created.
 
   // Auto sanitize any legacy text misuse where flock.name or alloc.flockName is raw text like "7 cocks+1hen" or "7 turkey + 2 chicks"
   if (Array.isArray(db.flocks)) {
@@ -741,7 +742,7 @@ function loadDb(): any {
   }
 
   // Ensure cage allocations list is initialized
-  if (!db.cage_allocations || !Array.isArray(db.cage_allocations) || db.cage_allocations.length === 0) {
+  if (!db.cage_allocations || !Array.isArray(db.cage_allocations)) {
     db.cage_allocations = [];
     if (db.flocks && db.flocks.length > 0) {
       db.flocks.forEach((flock: any) => {
@@ -756,8 +757,8 @@ function loadDb(): any {
             species: flock.species || "Chicken",
             quantity: flock.quantity,
             ageWeeks: flock.ageWeeks || 0,
-            dateAdded: flock.dateAdded || new Date().toISOString().split("T")[0],
-            dateTransferred: flock.dateAdded || new Date().toISOString().split("T")[0],
+            dateAdded: flock.dateAdded || cameroonDate(),
+            dateTransferred: flock.dateAdded || cameroonDate(),
             notes: flock.notes || ""
           });
         }
@@ -772,24 +773,23 @@ function loadDb(): any {
     saveDb(db);
   }
 
-  return cachedDb;
+  return structuredClone(cachedDb);
 }
 
 let dbVersion = Date.now();
 
 function saveDbLocalFileOnly(data: any) {
-  cachedDb = data;
-  dbVersion = Date.now();
-  const tmpFile = DB_FILE + ".tmp";
+  const tmpFile = `${DB_FILE}.${crypto.randomUUID()}.tmp`;
   try {
     const json = JSON.stringify(data);
-    fs.writeFile(tmpFile, json, "utf-8", (err) => {
-      if (!err) {
-        fs.rename(tmpFile, DB_FILE, () => {});
-      }
-    });
+    fs.writeFileSync(tmpFile, json, "utf-8");
+    fs.renameSync(tmpFile, DB_FILE);
+    cachedDb = data;
+    dbVersion += 1;
   } catch (err) {
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
     console.error("Failed to safely persist local database file:", err);
+    throw err;
   }
 }
 
@@ -832,9 +832,17 @@ async function syncFromFirestoreOnBoot() {
     if (docSnap.exists()) {
       const cloudData: any = docSnap.data();
       if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length > 0) {
-        console.log("[Firebase Cloud Firestore] Hydrated database snapshot from Cloud Firestore!");
-        cachedDb = cloudData;
-        saveDbLocalFileOnly(cloudData);
+        let localData: any = null;
+        try { if (fs.existsSync(DB_FILE)) localData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
+        catch (err) { throw new Error('Local database is unreadable; cloud hydration stopped to preserve evidence.', { cause: err }); }
+        if (localData?._updatedAt && (!cloudData._updatedAt || localData._updatedAt > cloudData._updatedAt)) {
+          console.log('[Firebase Cloud Firestore] Local database is newer; retaining it and scheduling cloud sync.');
+          cachedDb = localData;
+          scheduleFirestoreSync(localData);
+        } else {
+          console.log("[Firebase Cloud Firestore] Hydrated database snapshot from Cloud Firestore!");
+          saveDbLocalFileOnly(cloudData);
+        }
       }
     }
   } catch (err: any) {
@@ -848,8 +856,8 @@ async function syncFromFirestoreOnBoot() {
   }
 }
 
-// Initial hydration from Cloud Firestore
-syncFromFirestoreOnBoot().catch(() => {});
+// Finish cloud hydration before accepting requests, so an early write cannot overwrite it.
+const firestoreHydration = syncFromFirestoreOnBoot();
 
 function scheduleFirestoreSync(data: any) {
   if (!firestoreDb || firestoreQuotaExhausted) return;
@@ -858,12 +866,14 @@ function scheduleFirestoreSync(data: any) {
   }
   firestoreSyncTimer = setTimeout(() => {
     firestoreSyncTimer = null;
-    syncToFirestore(data).catch(() => {});
+    firestoreWriteQueue = firestoreWriteQueue.then(() => syncToFirestore(data)).catch(err => {
+      console.error('[Firebase Cloud Firestore] Queued snapshot failed:', err);
+    });
   }, 1000);
 }
 
 function saveDb(data: any) {
-  cachedDb = data;
+  data._updatedAt = new Date().toISOString();
   saveDbLocalFileOnly(data);
   scheduleFirestoreSync(data);
 }
@@ -929,12 +939,26 @@ function syncFlockWithAllRelatedTables(db: any, flock: any, oldName?: string) {
 }
 
 function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password).digest("hex");
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `scrypt:${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  if (stored?.startsWith('scrypt:')) {
+    const [, salt, expectedHex] = stored.split(':');
+    if (!salt || !expectedHex || expectedHex.length !== 128) return false;
+    return crypto.timingSafeEqual(crypto.scryptSync(password, salt, 64), Buffer.from(expectedHex, 'hex'));
+  }
+  const legacy = crypto.createHash('sha256').update(password).digest('hex');
+  return typeof stored === 'string' && stored.length === legacy.length &&
+    crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(stored));
 }
 
 async function startServer() {
+  await firestoreHydration;
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
   app.use(express.json());
 
@@ -944,17 +968,13 @@ async function startServer() {
     if (!token) return null;
 
     const db = loadDb();
-    const user = db.users.find((u: any) => u.id === token || u.username === token);
+    const tokenHash = crypto.createHash('sha256').update(String(token).replace(/^Bearer\s+/i, '')).digest('hex');
+    const session = (db.sessions || []).find((s: any) => s.tokenHash === tokenHash && s.expiresAt > Date.now());
+    const user = session && db.users.find((u: any) => u.id === session.userId);
     return user || null;
   }
 
   function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-    const db = loadDb();
-    // Allow setup if database has zero users
-    if (db.users.length === 0) {
-      return next();
-    }
-
     const user = getAuthorizedUser(req);
     if (!user) {
       return res.status(401).json({ error: "Unauthorized access: Please sign in." });
@@ -976,11 +996,14 @@ async function startServer() {
   // User Sign-up/Register (Max 5 family members)
   app.post("/api/auth/register", (req, res) => {
     const { username, password, name } = req.body;
-    if (!username || !password || !name) {
-      return res.status(400).json({ error: "Missing required registration parameters." });
+    if (typeof username !== 'string' || typeof password !== 'string' || typeof name !== 'string' || !username.trim() || !name.trim() || password.length < 8) {
+      return res.status(400).json({ error: "Enter a name, username and password of at least 8 characters." });
     }
 
     const db = loadDb();
+    if (db.users.length > 0 && !getAuthorizedUser(req)) {
+      return res.status(401).json({ error: 'A signed-in family member must add new users.' });
+    }
     if (db.users.length >= 10) {
       return res.status(400).json({ error: "Registration limit reached. Maximum 10 family members allowed." });
     }
@@ -1010,23 +1033,44 @@ async function startServer() {
   // User Authentication login
   app.post("/api/auth/login", (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return res.status(400).json({ error: "Username and password are required." });
     }
 
     const db = loadDb();
     const norm = username.trim().toLowerCase();
+    const attempt = loginAttempts.get(norm);
+    if (attempt && attempt.resetAt > Date.now() && attempt.count >= 10) {
+      return res.status(429).json({ error: 'Too many sign-in attempts. Try again in 15 minutes.' });
+    }
     const user = db.users.find((u: any) => u.username.toLowerCase() === norm);
 
-    if (!user || user.passwordHash !== hashPassword(password)) {
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      loginAttempts.set(norm, { count: attempt && attempt.resetAt > Date.now() ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > Date.now() ? attempt.resetAt : Date.now() + 15 * 60 * 1000 });
       return res.status(401).json({ error: "Invalid username or password." });
     }
+    loginAttempts.delete(norm);
+
+    if (!user.passwordHash.startsWith('scrypt:')) user.passwordHash = hashPassword(password);
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    db.sessions = (db.sessions || []).filter((s: any) => s.expiresAt > Date.now());
+    db.sessions.push({ userId: user.id, tokenHash: crypto.createHash('sha256').update(sessionToken).digest('hex'), expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+    saveDb(db);
 
     res.json({
       success: true,
-      token: user.id,
+      token: sessionToken,
       user: { id: user.id, username: user.username, name: user.name }
     });
+  });
+
+  app.post('/api/auth/logout', requireAuth, (req, res) => {
+    const db = loadDb();
+    const token = String(req.headers.authorization || req.headers['x-auth-token'] || '').replace(/^Bearer\s+/i, '');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    db.sessions = (db.sessions || []).filter((s: any) => s.tokenHash !== tokenHash);
+    saveDb(db);
+    res.json({ success: true });
   });
 
   // Fetch full data snapshot
@@ -1095,7 +1139,7 @@ async function startServer() {
   // GET simple db configuration
   app.get("/api/db-raw", requireAuth, (req, res) => {
     const db = loadDb();
-    const { users, ...clean } = db;
+    const { users, sessions, ...clean } = db;
     res.json(clean);
   });
 
@@ -1740,8 +1784,8 @@ async function startServer() {
       species: species || "Chicken",
       quantity: Number(quantity),
       ageWeeks: Number(ageWeeks) || 0,
-      dateAdded: dateAdded || new Date().toISOString().split("T")[0],
-      dateTransferred: dateTransferred || dateAdded || new Date().toISOString().split("T")[0],
+      dateAdded: dateAdded || cameroonDate(),
+      dateTransferred: dateTransferred || dateAdded || cameroonDate(),
       countMode: countMode || 'single',
       cocksCount: cocksCount !== undefined ? Number(cocksCount) : undefined,
       hensCount: hensCount !== undefined ? Number(hensCount) : undefined,
@@ -1880,7 +1924,7 @@ async function startServer() {
 function calculateCurrentAgeWeeks(
   dateAdded?: string,
   initialAgeWeeks: number = 0,
-  targetDate: string = new Date().toISOString().split('T')[0]
+  targetDate: string = cameroonDate()
 ): number {
   const baseAge = Number(initialAgeWeeks) || 0;
   if (!dateAdded) return baseAge;
@@ -1916,7 +1960,7 @@ function calculateCurrentAgeWeeks(
     }
 
     const qtyToMove = Number(quantity);
-    const transferDate = date || new Date().toISOString().split("T")[0];
+    const transferDate = date || cameroonDate();
     const cleanFromCage = String(fromCage).trim();
     const cleanToCage = String(toCage).trim();
 
@@ -2033,7 +2077,7 @@ function calculateCurrentAgeWeeks(
     if (!db.daily_egg_collections) db.daily_egg_collections = [];
     const { id, date, brahmaEggs, turkeyEggs, recordedBy, notes } = req.body;
 
-    const recDate = date || new Date().toISOString().split("T")[0];
+    const recDate = date || cameroonDate();
     const bEggs = Math.max(0, Number(brahmaEggs) || 0);
     const tEggs = Math.max(0, Number(turkeyEggs) || 0);
     const total = bEggs + tEggs;
@@ -2949,7 +2993,7 @@ function calculateCurrentAgeWeeks(
   // Global Sync Endpoint
   app.get("/api/db", requireAuth, (req, res) => {
     const db = loadDb();
-    const { users, ...rest } = db;
+    const { users, sessions, ...rest } = db;
     res.json(rest);
   });
 
@@ -2981,7 +3025,7 @@ function calculateCurrentAgeWeeks(
               breed: String(body.breed).trim(),
               quantity: Number(body.quantity || 0),
               ageWeeks: Number(body.ageWeeks || 0),
-              dateAdded: String(body.dateAdded || new Date().toISOString().split("T")[0]),
+              dateAdded: String(body.dateAdded || cameroonDate()),
               species: body.species ? String(body.species) : 'Chicken',
               notes: body.notes ? String(body.notes).trim() : "",
               initialAgeWeeks: Number(body.ageWeeks || 0)
@@ -3012,7 +3056,7 @@ function calculateCurrentAgeWeeks(
             const existsIdx = db.feed_records.findIndex((f: any) => f.id === feedId);
             const feedObj = {
               id: feedId,
-              date: String(body.date || new Date().toISOString().split("T")[0]),
+              date: String(body.date || cameroonDate()),
               feedType: String(body.feedType).trim(),
               bagsBought: Number(body.bagsBought || 0),
               weightPerBag: Number(body.weightPerBag || 50),
@@ -3045,7 +3089,7 @@ function calculateCurrentAgeWeeks(
             const existsIdx = db.poultry_sales.findIndex((s: any) => s.id === saleId);
             const saleObj = {
               id: saleId,
-              date: String(body.date || new Date().toISOString().split("T")[0]),
+              date: String(body.date || cameroonDate()),
               itemType: String(body.itemType),
               quantity: Number(body.quantity || 0),
               unitPrice: Number(body.unitPrice || 0),
@@ -3087,7 +3131,7 @@ function calculateCurrentAgeWeeks(
             const flock = db.flocks.find((f: any) => f.id === body.flockId);
             const mortObj = {
               id: mortId,
-              date: String(body.date || new Date().toISOString().split("T")[0]),
+              date: String(body.date || cameroonDate()),
               flockId: String(body.flockId),
               flockName: flock ? flock.name : (body.flockName || "Flock"),
               quantity: Number(body.quantity || 0),
@@ -3114,7 +3158,7 @@ function calculateCurrentAgeWeeks(
             const existsIdx = db.expenses.findIndex((e: any) => e.id === expId);
             const expObj = {
               id: expId,
-              date: String(body.date || new Date().toISOString().split("T")[0]),
+              date: String(body.date || cameroonDate()),
               category: String(body.category),
               description: String(body.description || "").trim(),
               amount: Number(body.amount || 0)
@@ -3146,7 +3190,7 @@ function calculateCurrentAgeWeeks(
             const flock = db.flocks.find((f: any) => f.id === body.flockId);
             const eatenObj = {
               id: eatenId,
-              date: String(body.date || new Date().toISOString().split("T")[0]),
+              date: String(body.date || cameroonDate()),
               flockId: String(body.flockId),
               flockName: flock ? flock.name : (body.flockName || "Flock"),
               species: flock ? (flock.species || 'Chicken') : 'Chicken',
@@ -3286,6 +3330,9 @@ function calculateCurrentAgeWeeks(
       }
     }
 
+    if (processedCount !== items.length) {
+      return res.status(409).json({ error: 'Some offline changes could not be applied.', processedCount, requestedCount: items.length });
+    }
     saveDb(db);
 
     const safeUsers = db.users.map((u: any) => ({ id: u.id, username: u.username, name: u.name }));
@@ -3307,12 +3354,9 @@ function calculateCurrentAgeWeeks(
   });
 
   // Serve static UI assets & public folder for Service Worker & Manifest
-  const publicPath = path.join(process.cwd(), "public");
-  if (fs.existsSync(publicPath)) {
-    app.use(express.static(publicPath));
-  }
-
   if (process.env.NODE_ENV !== "production") {
+    const publicPath = path.join(process.cwd(), "public");
+    if (fs.existsSync(publicPath)) app.use(express.static(publicPath));
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

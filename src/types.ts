@@ -54,7 +54,7 @@ export interface IncubatorRecord {
 
 export type BirdSpecies = 'Chicken' | 'Turkey' | 'Agric Fowls' | 'Quail' | 'Chicks' | 'Poults' | string;
 
-export type CountMode = 'single' | 'multi' | 'sex_breakdown';
+export type CountMode = 'single' | 'multi' | 'multi_species' | 'sex_breakdown';
 
 export interface SpeciesCount {
   species: string;

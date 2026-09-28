@@ -11,7 +11,7 @@ import {
 import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord } from '../types';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
-import { formatDateDDMMYYYY, parseDateToISO, calculateCurrentAgeWeeks, formatFlockAge, formatAgeDisplay, calculateFlockAge, parseNumericAgeWeeks } from '../utils/dateUtils';
+import { getCameroonTodayISO, formatDateDDMMYYYY, parseDateToISO, calculateCurrentAgeWeeks, formatFlockAge, formatAgeDisplay, calculateFlockAge, parseNumericAgeWeeks } from '../utils/dateUtils';
 
 interface PoultryModProps {
   data: {
@@ -139,8 +139,7 @@ function SearchableCageSelect({
               <button
                 key={`${c.id || idx}-${c.cageName}`}
                 type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
+                onClick={() => {
                   onChange(c.cageName);
                   setQuery(c.cageName);
                   setIsOpen(false);
@@ -278,7 +277,7 @@ export default function PoultryMod({
 
   // Collapsible state toggles
   const [activeFormSection, setActiveFormSection] = useState<string | null>(quickFormKey);
-  const [farmSubSection, setFarmSubSection] = useState<'all' | 'flocks' | 'eggs' | 'sales' | 'feed' | 'mortality' | 'eaten' | 'expenses'>('all');
+  const [farmSubSection, setFarmSubSection] = useState<'overview' | 'all' | 'flocks' | 'eggs' | 'sales' | 'feed' | 'mortality' | 'eaten' | 'expenses'>('overview');
 
   React.useEffect(() => {
     if (quickFormKey) {
@@ -288,8 +287,8 @@ export default function PoultryMod({
       } else if (quickFormKey === 'flock' || quickFormKey === 'transfer') {
         setActiveFormSection(quickFormKey);
         setFarmSubSection('flocks');
-      } else if (quickFormKey === 'sale') {
-        setActiveFormSection(quickFormKey);
+      } else if (quickFormKey === 'sale' || quickFormKey === 'sales') {
+        setActiveFormSection('sales');
         setFarmSubSection('sales');
       } else if (quickFormKey === 'feed') {
         setActiveFormSection(quickFormKey);
@@ -297,8 +296,8 @@ export default function PoultryMod({
       } else if (quickFormKey === 'mortality') {
         setActiveFormSection(quickFormKey);
         setFarmSubSection('mortality');
-      } else if (quickFormKey === 'eaten') {
-        setActiveFormSection(quickFormKey);
+      } else if (quickFormKey === 'eaten' || quickFormKey === 'fowls_eaten') {
+        setActiveFormSection('fowls_eaten');
         setFarmSubSection('eaten');
       } else if (quickFormKey === 'expense') {
         setActiveFormSection(quickFormKey);
@@ -306,7 +305,7 @@ export default function PoultryMod({
       } else {
         setActiveFormSection(quickFormKey);
       }
-      const keyToScroll = quickFormKey;
+      const keyToScroll = quickFormKey === 'sale' ? 'sales' : quickFormKey === 'eaten' ? 'fowls_eaten' : quickFormKey;
       setQuickFormKey(null);
 
       setTimeout(() => {
@@ -314,7 +313,7 @@ export default function PoultryMod({
                    document.getElementById(`form_section_${keyToScroll}`) || 
                    document.getElementById(`qa_log_${keyToScroll}`);
         if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
       }, 150);
     }
@@ -326,7 +325,7 @@ export default function PoultryMod({
   const [flockBreed, setFlockBreed] = useState('Brahma');
   const [flockQty, setFlockQty] = useState('');
   const [flockAge, setFlockAge] = useState('');
-  const [flockDate, setFlockDate] = useState(new Date().toISOString().split('T')[0]);
+  const [flockDate, setFlockDate] = useState(getCameroonTodayISO());
   const [flockSpecies, setFlockSpecies] = useState<string>('Chicken');
   const [turkeyType, setTurkeyType] = useState<'Gobbler' | 'Hen'>('Gobbler');
   const [flockNotes, setFlockNotes] = useState('');
@@ -362,7 +361,7 @@ export default function PoultryMod({
   const [transferFromCage, setTransferFromCage] = useState('');
   const [transferToCage, setTransferToCage] = useState('');
   const [transferQty, setTransferQty] = useState('');
-  const [transferDate, setTransferDate] = useState(new Date().toISOString().split('T')[0]);
+  const [transferDate, setTransferDate] = useState(getCameroonTodayISO());
   const [transferNotes, setTransferNotes] = useState('');
   const [transferAgeWeeks, setTransferAgeWeeks] = useState('');
   const [transferSourceFlockId, setTransferSourceFlockId] = useState('');
@@ -533,8 +532,8 @@ export default function PoultryMod({
     species: 'Chicken',
     quantity: '',
     ageWeeks: '0',
-    dateAdded: new Date().toISOString().split('T')[0],
-    dateTransferred: new Date().toISOString().split('T')[0],
+    dateAdded: getCameroonTodayISO(),
+    dateTransferred: getCameroonTodayISO(),
     notes: ''
   });
 
@@ -809,7 +808,7 @@ export default function PoultryMod({
   // Daily Egg Collection State & Handlers
   const [isEggCollFormOpen, setIsEggCollFormOpen] = useState(false);
   const [editingEggColl, setEditingEggColl] = useState<DailyEggCollection | null>(null);
-  const [eggFormDate, setEggFormDate] = useState(new Date().toISOString().split('T')[0]);
+  const [eggFormDate, setEggFormDate] = useState(getCameroonTodayISO());
   const [eggFormBrahma, setEggFormBrahma] = useState('');
   const [eggFormTurkey, setEggFormTurkey] = useState('');
   const [eggFormRecordedBy, setEggFormRecordedBy] = useState('');
@@ -826,7 +825,7 @@ export default function PoultryMod({
     try {
       const payload = {
         id: editingEggColl ? editingEggColl.id : undefined,
-        date: eggFormDate || new Date().toISOString().split('T')[0],
+        date: eggFormDate || getCameroonTodayISO(),
         brahmaEggs: Math.max(0, Number(eggFormBrahma) || 0),
         turkeyEggs: Math.max(0, Number(eggFormTurkey) || 0),
         recordedBy: eggFormRecordedBy || 'Operator',
@@ -987,7 +986,7 @@ export default function PoultryMod({
   }, [data.flocks]);
 
   // Feed
-  const [feedDate, setFeedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [feedDate, setFeedDate] = useState(getCameroonTodayISO());
   const [feedType, setFeedType] = useState('Starter');
   const [feedBags, setFeedBags] = useState('');
   const [feedWeight, setFeedWeight] = useState('50'); // standard kg bag
@@ -995,7 +994,7 @@ export default function PoultryMod({
   const [feedRemaining, setFeedRemaining] = useState('');
 
   // Sales
-  const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0]);
+  const [saleDate, setSaleDate] = useState(getCameroonTodayISO());
   const [saleItem, setSaleItem] = useState<'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed'>('Fowl');
   const [saleQty, setSaleQty] = useState('');
   const [salePrice, setSalePrice] = useState('');
@@ -1005,19 +1004,19 @@ export default function PoultryMod({
   const [saleNotes, setSaleNotes] = useState('');
 
   // Mortality
-  const [mortDate, setMortDate] = useState(new Date().toISOString().split('T')[0]);
+  const [mortDate, setMortDate] = useState(getCameroonTodayISO());
   const [mortFlockId, setMortFlockId] = useState('');
   const [mortQty, setMortQty] = useState('');
   const [mortCause, setMortCause] = useState('');
 
   // Expenses
-  const [expDate, setExpDate] = useState(new Date().toISOString().split('T')[0]);
+  const [expDate, setExpDate] = useState(getCameroonTodayISO());
   const [expCat, setExpCategory] = useState<'Vaccine' | 'Transport' | 'Labor' | 'Electricity' | 'Repair' | 'Other'>('Vaccine');
   const [expDesc, setExpDesc] = useState('');
   const [expAmount, setExpAmount] = useState('');
 
   // Fowls Eaten at Home (House Consumption)
-  const [eatenDate, setEatenDate] = useState(new Date().toISOString().split('T')[0]);
+  const [eatenDate, setEatenDate] = useState(getCameroonTodayISO());
   const [eatenFlockId, setEatenFlockId] = useState('');
   const [eatenQty, setEatenQty] = useState('');
   const [eatenAgeWeeks, setEatenAgeWeeks] = useState('');
@@ -1520,8 +1519,8 @@ export default function PoultryMod({
         species: 'Chicken',
         quantity: '',
         ageWeeks: '0',
-        dateAdded: new Date().toISOString().split('T')[0],
-        dateTransferred: new Date().toISOString().split('T')[0],
+        dateAdded: getCameroonTodayISO(),
+        dateTransferred: getCameroonTodayISO(),
         notes: ''
       });
     } catch (err: any) {
@@ -1982,7 +1981,7 @@ export default function PoultryMod({
                           setEditingFlock(f);
                           setEditFlockName(f.name);
                           const detectedMode = f.countMode || (f.speciesBreakdown && f.speciesBreakdown.length > 0 ? 'multi_species' : ((f.cocksCount || 0) > 0 || (f.hensCount || 0) > 0) ? 'sex_breakdown' : 'single');
-                          setEditFlockCountMode(detectedMode);
+                          setEditFlockCountMode(detectedMode === 'multi' ? 'multi_species' : detectedMode);
                           setEditFlockCocksCount(String(f.cocksCount || 0));
                           setEditFlockHensCount(String(f.hensCount || 0));
                           setEditFlockSpeciesBreakdown(
@@ -2043,10 +2042,16 @@ export default function PoultryMod({
         </div>
       )}
 
-      {/* High-Clarity Farm Sub-Section Selector */}
-      <div className="flex items-center gap-1.5 p-1.5 bg-slate-100/90 rounded-2xl border border-slate-200/70 overflow-x-auto select-none touch-pan-x scrollbar-none shadow-inner">
+      <div className="px-1"><h1 className="text-2xl font-bold tracking-tight text-emerald-950">Farm records</h1><p className="text-sm text-slate-600">Choose what you want to manage today.</p></div>
+      <label className="block sm:hidden text-sm font-semibold text-emerald-950">Farm section
+        <select aria-label="Farm section" value={farmSubSection} onChange={event => setFarmSubSection(event.target.value as typeof farmSubSection)} className="mt-2 h-13 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-base text-emerald-950">
+          <option value="overview">Overview</option><option value="flocks">Flocks and cages</option><option value="eggs">Egg collection</option><option value="sales">Sales</option><option value="feed">Feed</option><option value="mortality">Bird loss</option><option value="eaten">Birds eaten</option><option value="expenses">Expenses</option><option value="all">View all records</option>
+        </select>
+      </label>
+      <nav aria-label="Farm sections" className="hidden sm:flex items-center gap-2 p-1.5 bg-emerald-50 rounded-2xl border border-emerald-100 overflow-x-auto select-none touch-pan-x scrollbar-none">
         {[
-          { id: 'all', label: 'All Farm', icon: <LayoutGrid size={14} className="shrink-0" /> },
+          { id: 'overview', label: 'Overview', icon: <LayoutGrid size={16} className="shrink-0" /> },
+          { id: 'all', label: 'View all', icon: <LayoutGrid size={14} className="shrink-0" /> },
           { id: 'flocks', label: 'Flocks & Cages', icon: <Layers size={14} className="shrink-0" />, count: totalChickens + totalTurkeys },
           { id: 'eggs', label: 'Daily Egg Yield', icon: <Sparkles size={14} className="shrink-0" />, count: (data.daily_egg_collections || []).length },
           { id: 'sales', label: 'Sales & Revenue', icon: <DollarSign size={14} className="shrink-0" />, count: (data.poultry_sales || []).length },
@@ -2077,7 +2082,8 @@ export default function PoultryMod({
                   }, 50);
                 }
               }}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer select-none active:scale-95 shrink-0 ${
+              aria-current={isActive ? 'page' : undefined}
+              className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold whitespace-nowrap transition-all cursor-pointer select-none active:scale-95 shrink-0 ${
                 isActive
                   ? 'bg-white text-emerald-900 shadow-sm font-extrabold ring-1 ring-slate-900/5'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -2095,10 +2101,10 @@ export default function PoultryMod({
             </button>
           );
         })}
-      </div>
+      </nav>
 
       {/* FARM INVENTORY SUMMARY GRID */}
-      <div id="farm_inventory_dashboard" className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div id="farm_inventory_dashboard" hidden={farmSubSection !== 'overview' && farmSubSection !== 'all'} className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Chickens Card */}
         <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-3">
@@ -2118,6 +2124,7 @@ export default function PoultryMod({
                 onClick={() => {
                   setFlockSpecies('Chicken');
                   setActiveFormSection('flock');
+                  setFarmSubSection('flocks');
                   setTimeout(() => {
                     const el = document.getElementById('section_flocks');
                     if (el) el.scrollIntoView({ behavior: 'smooth' });
@@ -2169,6 +2176,7 @@ export default function PoultryMod({
                 onClick={() => {
                   setFlockSpecies('Turkey');
                   setActiveFormSection('flock');
+                  setFarmSubSection('flocks');
                   setTimeout(() => {
                     const el = document.getElementById('section_flocks');
                     if (el) el.scrollIntoView({ behavior: 'smooth' });
@@ -2203,7 +2211,7 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 1: FLOCKS */}
-      <div id="section_flocks" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_flocks" hidden={farmSubSection !== 'all' && farmSubSection !== 'flocks'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">1. Brahma Flocks & Cage Inventory</h3>
@@ -2238,7 +2246,7 @@ export default function PoultryMod({
 
         {/* Collapsible Form */}
         {activeFormSection === 'flock' && (
-          <form onSubmit={handleAddFlock} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+          <form id="form_section_flock" onSubmit={handleAddFlock} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Add New Fowl Batch</h4>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3636,7 +3644,7 @@ export default function PoultryMod({
       </div>
 
       {/* DAILY FARM EGG COLLECTION LOG SECTION */}
-      <div id="section_egg_collections" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_egg_collections" hidden={farmSubSection !== 'all' && farmSubSection !== 'eggs'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-600 flex items-center justify-center font-bold shadow-xs">
@@ -3659,7 +3667,7 @@ export default function PoultryMod({
             type="button"
             onClick={() => {
               setEditingEggColl(null);
-              setEggFormDate(new Date().toISOString().split('T')[0]);
+              setEggFormDate(getCameroonTodayISO());
               setEggFormBrahma('');
               setEggFormTurkey('');
               setEggFormNotes('');
@@ -3690,7 +3698,7 @@ export default function PoultryMod({
             <div className="text-right">
               <span className="text-[10px] font-bold text-slate-400 block uppercase">Today's Brahma</span>
               <span className="text-sm font-black text-amber-700">
-                {((data.daily_egg_collections || []).find(r => r.date === new Date().toISOString().split('T')[0])?.brahmaEggs || 0)} eggs
+                {((data.daily_egg_collections || []).find(r => r.date === getCameroonTodayISO())?.brahmaEggs || 0)} eggs
               </span>
             </div>
           </div>
@@ -3710,7 +3718,7 @@ export default function PoultryMod({
             <div className="text-right">
               <span className="text-[10px] font-bold text-slate-400 block uppercase">Today's Turkey</span>
               <span className="text-sm font-black text-orange-700">
-                {((data.daily_egg_collections || []).find(r => r.date === new Date().toISOString().split('T')[0])?.turkeyEggs || 0)} eggs
+                {((data.daily_egg_collections || []).find(r => r.date === getCameroonTodayISO())?.turkeyEggs || 0)} eggs
               </span>
             </div>
           </div>
@@ -3730,7 +3738,7 @@ export default function PoultryMod({
             <div className="text-right">
               <span className="text-[10px] font-bold text-slate-400 block uppercase">Today Total</span>
               <span className="text-sm font-black text-emerald-700">
-                {((data.daily_egg_collections || []).find(r => r.date === new Date().toISOString().split('T')[0])?.totalEggs || 0)} eggs
+                {((data.daily_egg_collections || []).find(r => r.date === getCameroonTodayISO())?.totalEggs || 0)} eggs
               </span>
             </div>
           </div>
@@ -3738,7 +3746,7 @@ export default function PoultryMod({
 
         {/* Collapsible Input Form */}
         {isEggCollFormOpen && (
-          <form onSubmit={handleSaveEggCollection} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4 mb-6 animate-in fade-in duration-200">
+          <form id="form_section_egg_collection" onSubmit={handleSaveEggCollection} className="scroll-mt-20 bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4 mb-6 animate-in fade-in duration-200">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <h4 className="text-sm font-black text-slate-900 uppercase tracking-wider flex items-center gap-2">
                 <span>{editingEggColl ? '✏️ Edit Daily Egg Collection Log' : '🥚 Record Today\'s Egg Collection'}</span>
@@ -3930,7 +3938,7 @@ export default function PoultryMod({
                 </tr>
               ) : (
                 sortedEggCollections.map((rec) => {
-                  const isToday = rec.date === new Date().toISOString().split('T')[0];
+                  const isToday = rec.date === getCameroonTodayISO();
                   return (
                     <tr key={rec.id} className={`hover:bg-amber-50/20 transition-colors ${isToday ? 'bg-amber-50/40' : ''}`}>
                       <td className="p-3 font-mono font-bold text-slate-900 flex items-center gap-2">
@@ -3992,25 +4000,25 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 2: FEED RECORDS */}
-      <div id="section_feed" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_feed" hidden={farmSubSection !== 'all' && farmSubSection !== 'feed'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">2. Feed Purchase</h3>
+            <h3 className="text-lg font-bold text-slate-900">Feed purchases</h3>
             <p className="text-slate-400 text-xs font-semibold">Track stock quantities & expenses for feed bags</p>
           </div>
           <button
             id="toggle_feed_form"
             onClick={() => toggleSection('feed')}
-            className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+            className={`cursor-pointer min-h-11 px-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1 transition-colors ${
               activeFormSection === 'feed' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
             }`}
           >
-            {activeFormSection === 'feed' ? <Minus size={20} /> : <Plus size={20} />}
+            {activeFormSection === 'feed' ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add feed</>}
           </button>
         </div>
 
         {activeFormSection === 'feed' && (
-          <form onSubmit={handleAddFeed} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+          <form id="form_section_feed" onSubmit={handleAddFeed} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
             <DraftSavedBadge
               hasRestoredDraft={hasFeedDraft}
               onDiscard={() => {
@@ -4263,25 +4271,25 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 3: SALES */}
-      <div id="section_sales" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_sales" hidden={farmSubSection !== 'all' && farmSubSection !== 'sales'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">3. Poultry Sales</h3>
+            <h3 className="text-lg font-bold text-slate-900">Sales</h3>
             <p className="text-slate-400 text-xs font-semibold">Track revenues from sales of Brahma stock & products</p>
           </div>
           <button
             id="toggle_sales_form"
             onClick={() => toggleSection('sales')}
-            className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+            className={`cursor-pointer min-h-11 px-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1 transition-colors ${
               activeFormSection === 'sales' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
             }`}
           >
-            {activeFormSection === 'sales' ? <Minus size={20} /> : <Plus size={20} />}
+            {activeFormSection === 'sales' ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add sale</>}
           </button>
         </div>
 
         {activeFormSection === 'sales' && (
-          <form onSubmit={handleAddSale} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+          <form id="form_section_sales" onSubmit={handleAddSale} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
             <DraftSavedBadge
               hasRestoredDraft={hasSaleDraft}
               onDiscard={() => {
@@ -4609,7 +4617,7 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 4: MORTALITY */}
-      <div id="section_mortality" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_mortality" hidden={farmSubSection !== 'all' && farmSubSection !== 'mortality'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">4. Mortality Tracker</h3>
@@ -4618,16 +4626,16 @@ export default function PoultryMod({
           <button
             id="toggle_mort_form"
             onClick={() => toggleSection('mortality')}
-            className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+            className={`cursor-pointer min-h-11 px-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1 transition-colors ${
               activeFormSection === 'mortality' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
             }`}
           >
-            {activeFormSection === 'mortality' ? <Minus size={20} /> : <Plus size={20} />}
+            {activeFormSection === 'mortality' ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add loss</>}
           </button>
         </div>
 
         {activeFormSection === 'mortality' && (
-          <form onSubmit={handleAddMortality} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+          <form id="form_section_mortality" onSubmit={handleAddMortality} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
             <DraftSavedBadge
               hasRestoredDraft={hasMortDraft}
               onDiscard={() => {
@@ -4839,7 +4847,7 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 5: FOWLS EATEN AT HOME */}
-      <div id="section_fowls_eaten" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_fowls_eaten" hidden={farmSubSection !== 'all' && farmSubSection !== 'eaten'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
@@ -4853,16 +4861,16 @@ export default function PoultryMod({
           <button
             id="toggle_eaten_form"
             onClick={() => toggleSection('fowls_eaten')}
-            className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+            className={`cursor-pointer min-h-11 px-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1 transition-colors ${
               activeFormSection === 'fowls_eaten' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
             }`}
           >
-            {activeFormSection === 'fowls_eaten' ? <Minus size={20} /> : <Plus size={20} />}
+            {activeFormSection === 'fowls_eaten' ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add record</>}
           </button>
         </div>
 
         {activeFormSection === 'fowls_eaten' && (
-          <form onSubmit={handleAddFowlEaten} className="bg-amber-50/30 p-4 rounded-2xl border border-amber-100 space-y-4 mb-6">
+          <form id="form_section_fowls_eaten" onSubmit={handleAddFowlEaten} className="scroll-mt-20 bg-amber-50/30 p-4 rounded-2xl border border-amber-100 space-y-4 mb-6">
             <DraftSavedBadge
               hasRestoredDraft={hasEatenDraft}
               onDiscard={() => {
@@ -5129,7 +5137,7 @@ export default function PoultryMod({
       </div>
 
       {/* SECTION 6: EXPENSES */}
-      <div id="section_expenses" className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+      <div id="section_expenses" hidden={farmSubSection !== 'all' && farmSubSection !== 'expenses'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">6. Operations Expenses</h3>
@@ -5138,16 +5146,16 @@ export default function PoultryMod({
           <button
             id="toggle_exp_form"
             onClick={() => toggleSection('expense')}
-            className={`cursor-pointer w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+            className={`cursor-pointer min-h-11 px-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1 transition-colors ${
               activeFormSection === 'expense' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'
             }`}
           >
-            {activeFormSection === 'expense' ? <Minus size={20} /> : <Plus size={20} />}
+            {activeFormSection === 'expense' ? <><Minus size={18} /> Close</> : <><Plus size={18} /> Add expense</>}
           </button>
         </div>
 
         {activeFormSection === 'expense' && (
-          <form onSubmit={handleAddExpense} className="bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
+          <form id="form_section_expense" onSubmit={handleAddExpense} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
             <DraftSavedBadge
               hasRestoredDraft={hasExpDraft}
               onDiscard={() => {
@@ -6230,7 +6238,6 @@ export default function PoultryMod({
             <div 
               style={{ 
                 zoom: fullscreenZoom / 100,
-                WebkitZoom: fullscreenZoom / 100,
                 transition: touchStartDistRef.current ? 'none' : 'all 0.15s ease-out'
               }}
               className="w-full h-full min-w-full"

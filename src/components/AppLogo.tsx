@@ -78,7 +78,7 @@ export default function AppLogo({ size = 'md', showText = true, className = '' }
             New Vision<span className="text-emerald-600"> Farms</span>
           </div>
           <div className={`font-bold text-amber-600 uppercase tracking-widest text-[8px] sm:text-[9px]`}>
-            Brahma Hatchery<span className="hidden sm:inline"> & Incubator</span>
+            Farm & Hatchery
           </div>
         </div>
       )}
