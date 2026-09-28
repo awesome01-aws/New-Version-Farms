@@ -14,9 +14,9 @@ async function freePort() {
   return port;
 }
 
-async function startServer(port, dataDir) {
+async function startServer(port, dataDir, envOverrides = {}) {
   const child = spawn(process.execPath, ['dist/server.cjs'], {
-    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production' }, stdio: 'ignore'
+    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', ...envOverrides }, stdio: 'ignore'
   });
   for (let i = 0; i < 80; i++) {
     if (child.exitCode !== null) throw new Error(`Server stopped with ${child.exitCode}`);
@@ -86,6 +86,48 @@ test('family sessions, shared records, offline rejection and durable storage', a
     assert.equal(afterDeleteRestart.body.flocks.some(item => item.name === 'Test hens'), false);
     assert.equal((await post('/api/auth/logout', {}, child.body.token)).status, 200);
     assert.equal((await request('/api/data', { headers: { Authorization: child.body.token } })).status, 401);
+  } finally {
+    server?.kill();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('one-time loopback account recovery keeps existing records and closes after use', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nvf-recovery-test-'));
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const post = async (path, body, token) => {
+    const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: token } : {}) }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  let server;
+  const recoveryEnv = { NVF_LOCAL_ACCOUNT_RECOVERY: '1', NVF_HOST: '127.0.0.1' };
+  try {
+    server = await startServer(port, dataDir);
+    assert.equal((await post('/api/auth/register', { username: 'first', name: 'First', password: 'first-pass-123' })).status, 200);
+    const first = await post('/api/auth/login', { username: 'first', password: 'first-pass-123' });
+    assert.equal(first.status, 200);
+    assert.equal((await post('/api/flocks', { name: 'Existing hens', breed: 'Brahma', quantity: 5, ageWeeks: 2, dateAdded: '2026-09-28' }, first.body.token)).status, 200);
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+
+    server = await startServer(port, dataDir, recoveryEnv);
+    const statusBefore = await (await fetch(base + '/api/auth/status')).json();
+    assert.equal(statusBefore.setupRequired, false);
+    assert.equal(statusBefore.localRecoveryAllowed, true);
+    assert.equal((await post('/api/auth/register', { username: 'recovered', name: 'Recovered', password: 'recovery-pass-123' })).status, 200);
+    const statusAfter = await (await fetch(base + '/api/auth/status')).json();
+    assert.equal(statusAfter.localRecoveryAllowed, false);
+    assert.equal((await post('/api/auth/register', { username: 'extra', name: 'Extra', password: 'extra-pass-123' })).status, 401);
+    const recovered = await post('/api/auth/login', { username: 'recovered', password: 'recovery-pass-123' });
+    assert.equal(recovered.status, 200);
+    const shared = await (await fetch(base + '/api/data', { headers: { Authorization: recovered.body.token } })).json();
+    assert.ok(shared.flocks.some(flock => flock.name === 'Existing hens'));
+
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+    server = await startServer(port, dataDir, recoveryEnv);
+    assert.equal((await (await fetch(base + '/api/auth/status')).json()).localRecoveryAllowed, false);
   } finally {
     server?.kill();
     rmSync(dataDir, { recursive: true, force: true });

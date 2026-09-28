@@ -17,6 +17,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [name, setName] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
+  const [localRecoveryAllowed, setLocalRecoveryAllowed] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -27,7 +28,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       if (res.ok) {
         const data = await res.json();
         setSetupRequired(data.setupRequired);
-        if (data.setupRequired) {
+        setLocalRecoveryAllowed(Boolean(data.localRecoveryAllowed));
+        if (data.setupRequired || data.localRecoveryAllowed) {
           setIsRegistering(true);
         }
       }
@@ -107,12 +109,12 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             {setupRequired ? (
               'Create the first account'
             ) : isRegistering ? (
-              'Create an account'
+              localRecoveryAllowed ? 'Create a preview account' : 'Create an account'
             ) : (
               'Sign in'
             )}
           </h2>
-          <p className="text-sm text-slate-600 mb-6">{setupRequired ? 'Set up your family farm in a few steps.' : 'Enter your details to open the farm.'}</p>
+          <p className="text-sm text-slate-600 mb-6">{setupRequired ? 'Set up your family farm in a few steps.' : isRegistering && localRecoveryAllowed ? 'This account is for the local preview on this computer. Your original Google AI Studio app will stay unchanged.' : 'Enter your details to open the farm.'}</p>
 
           {error && (
             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl text-sm flex items-start gap-2">
@@ -196,7 +198,12 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             </button>
           </form>
 
-          {!setupRequired && <p className="mt-6 text-center text-sm text-slate-600">Need an account? Ask a family member who already uses the app to add you from the account menu.</p>}
+          {localRecoveryAllowed && !setupRequired && (
+            <button type="button" onClick={() => { setIsRegistering(!isRegistering); setError(''); setSuccessMsg(''); }} className="mt-5 w-full min-h-11 text-emerald-800 font-semibold underline underline-offset-4">
+              {isRegistering ? 'Use an existing account instead' : 'Create a local preview account'}
+            </button>
+          )}
+          {!setupRequired && !localRecoveryAllowed && <p className="mt-6 text-center text-sm text-slate-600">Need an account? Ask a family member who already uses the app to add you from the account menu.</p>}
         </div>
       </div>
       <p className="text-sm text-slate-600 mt-5 text-center max-w-xs">Keep your password private.</p>

@@ -29,6 +29,7 @@ if (!fs.existsSync(DATA_DIR)) {
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const BACKUPS_DIR = path.join(DATA_DIR, "backups");
 const QUOTA_MARKER_FILE = path.join(DATA_DIR, ".firestore_quota_exhausted");
+const LOCAL_RECOVERY_MARKER = path.join(DATA_DIR, '.local_account_recovery_used');
 
 let firestoreQuotaExhausted = false;
 if (fs.existsSync(QUOTA_MARKER_FILE)) {
@@ -958,7 +959,14 @@ async function startServer() {
   await firestoreHydration;
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
+  const HOST = process.env.NVF_HOST || '0.0.0.0';
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  let localRecoveryAvailable = process.env.NVF_LOCAL_ACCOUNT_RECOVERY === '1' && !fs.existsSync(LOCAL_RECOVERY_MARKER);
+
+  function canUseLocalRecovery(req: express.Request): boolean {
+    const address = req.socket.remoteAddress;
+    return localRecoveryAvailable && (address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1');
+  }
 
   app.use(express.json());
 
@@ -989,7 +997,8 @@ async function startServer() {
     const db = loadDb();
     res.json({
       setupRequired: db.users.length === 0,
-      userCount: db.users.length
+      userCount: db.users.length,
+      localRecoveryAllowed: canUseLocalRecovery(req)
     });
   });
 
@@ -1001,7 +1010,9 @@ async function startServer() {
     }
 
     const db = loadDb();
-    if (db.users.length > 0 && !getAuthorizedUser(req)) {
+    const signedInUser = db.users.length > 0 ? getAuthorizedUser(req) : null;
+    const usingLocalRecovery = db.users.length > 0 && canUseLocalRecovery(req) && !signedInUser;
+    if (db.users.length > 0 && !usingLocalRecovery && !signedInUser) {
       return res.status(401).json({ error: 'A signed-in family member must add new users.' });
     }
     if (db.users.length >= 10) {
@@ -1022,7 +1033,23 @@ async function startServer() {
     };
 
     db.users.push(newUser);
-    saveDb(db);
+    if (usingLocalRecovery) {
+      try { fs.writeFileSync(LOCAL_RECOVERY_MARKER, new Date().toISOString(), { flag: 'wx' }); }
+      catch (error) {
+        console.error('Could not reserve the one-time local account recovery:', error);
+        return res.status(503).json({ error: 'Local account recovery could not start. Please try again.' });
+      }
+    }
+    try { saveDb(db); }
+    catch (error) {
+      if (usingLocalRecovery) {
+        try { fs.unlinkSync(LOCAL_RECOVERY_MARKER); } catch (_) {}
+      }
+      throw error;
+    }
+    if (usingLocalRecovery) {
+      localRecoveryAvailable = false;
+    }
 
     res.json({
       success: true,
@@ -3370,7 +3397,7 @@ function calculateCurrentAgeWeeks(
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, HOST, () => {
     console.log(`NEW VISION FARMS server listening on port ${PORT}`);
   });
 }
