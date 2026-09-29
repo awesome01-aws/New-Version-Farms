@@ -5,6 +5,7 @@
 
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
 import { getCameroonTodayISO } from '../utils/dateUtils';
+import { apiUrl } from './apiOrigin';
 
 export interface DbData {
   users?: any[];
@@ -660,7 +661,7 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
   let synced = 0;
   try {
     for (const item of queue) {
-      const response = await networkFetch(item.endpoint, {
+      const response = await networkFetch(apiUrl(item.endpoint), {
         method: item.method,
         headers: {
           'Authorization': token,
@@ -684,7 +685,7 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
     notifyOfflineChange('Synced successfully');
     // Fetch fresh database snapshot from server
     try {
-      const dataRes = await networkFetch('/api/data', { headers: { 'Authorization': token } });
+      const dataRes = await networkFetch(apiUrl('/api/data'), { headers: { 'Authorization': token } });
       if (dataRes.ok) {
         const freshDb = await dataRes.json();
         saveOfflineDb(freshDb);

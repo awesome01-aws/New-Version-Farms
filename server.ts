@@ -8,17 +8,15 @@ import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import crypto from "crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import XLSX from "xlsx";
-import { initializeApp, setLogLevel } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc, terminate } from "firebase/firestore";
+import { initializeApp, applicationDefault } from "firebase-admin/app";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 function cameroonDate(date: Date = new Date()): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
-
-// Silence Firebase SDK internal logging
-setLogLevel("silent");
 
 // Ensure data folder exists
 const DATA_DIR = process.env.NVF_DATA_DIR || path.join(process.cwd(), "data");
@@ -28,40 +26,22 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const BACKUPS_DIR = path.join(DATA_DIR, "backups");
-const QUOTA_MARKER_FILE = path.join(DATA_DIR, ".firestore_quota_exhausted");
 const LOCAL_RECOVERY_MARKER = path.join(DATA_DIR, '.local_account_recovery_used');
-
-let firestoreQuotaExhausted = false;
-if (fs.existsSync(QUOTA_MARKER_FILE)) {
-  try {
-    const stat = fs.statSync(QUOTA_MARKER_FILE);
-    const ageHours = (Date.now() - stat.mtimeMs) / (1000 * 60 * 60);
-    if (ageHours < 24) {
-      firestoreQuotaExhausted = true;
-      console.warn("[Firebase Cloud Firestore] Quota marker active. Cloud sync paused; local disk storage active.");
-    } else {
-      fs.unlinkSync(QUOTA_MARKER_FILE);
-    }
-  } catch (_) {
-    firestoreQuotaExhausted = true;
-  }
+const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+const firebaseConfig = fs.existsSync(firebaseConfigPath)
+  ? JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"))
+  : null;
+if (!firebaseConfig && process.env.NODE_ENV === 'production' && process.env.NVF_LOCAL_ONLY !== '1') {
+  throw new Error('Firebase configuration is missing. Refusing to start a production server with disposable local storage.');
 }
-
-// Initialize Firebase Cloud Firestore Database
-let firestoreDb: any = null;
-if (!firestoreQuotaExhausted) {
-  try {
-    const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
-    if (fs.existsSync(firebaseConfigPath)) {
-      const config = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
-      const fbApp = initializeApp(config);
-      firestoreDb = getFirestore(fbApp, config.firestoreDatabaseId || "(default)");
-      console.log("[Firebase] Successfully initialized Cloud Firestore database for project:", config.projectId);
-    }
-  } catch (err) {
-    console.error("[Firebase] Error initializing Cloud Firestore:", err);
-  }
-}
+if (firebaseConfig && !firebaseConfig.projectId) throw new Error('Firebase projectId is missing.');
+const firestoreDb: Firestore | null = firebaseConfig
+  ? getFirestore(initializeApp({ credential: applicationDefault(), projectId: firebaseConfig.projectId }), firebaseConfig.firestoreDatabaseId || '(default)')
+  : null;
+const cloudDocument = firestoreDb?.doc('app_data/main');
+let cloudRevision = 0;
+const requestSaves = new AsyncLocalStorage<Promise<void>[]>();
+let cloudWriteQueue: Promise<void> = Promise.resolve();
 
 // Ensure backups directory exists
 if (!fs.existsSync(BACKUPS_DIR)) {
@@ -661,8 +641,6 @@ export const computeAmountDue = (record: {
 };
 
 let cachedDb: any = null;
-let firestoreSyncTimer: NodeJS.Timeout | null = null;
-let firestoreWriteQueue = Promise.resolve();
 
 function loadDb(): any {
   if (cachedDb) {
@@ -794,89 +772,56 @@ function saveDbLocalFileOnly(data: any) {
   }
 }
 
-function markFirestoreQuotaExhausted() {
-  firestoreQuotaExhausted = true;
-  try {
-    fs.writeFileSync(QUOTA_MARKER_FILE, new Date().toISOString(), "utf-8");
-  } catch (_) {}
-  if (firestoreDb) {
-    const dbToTerminate = firestoreDb;
-    firestoreDb = null;
-    terminate(dbToTerminate).catch(() => {});
+class CloudConflictError extends Error {}
+
+async function refreshFromCloud() {
+  if (!cloudDocument) return;
+  await cloudWriteQueue;
+  const snapshot = await cloudDocument.get();
+  if (!snapshot.exists || !snapshot.data()) {
+    throw new Error('The farm cloud database is missing. Check the Firebase project before continuing.');
+  }
+  const cloudData = snapshot.data()!;
+  const revision = Number(cloudData._revision ?? 0);
+  if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Invalid cloud database revision.');
+  if (!cachedDb || cloudRevision !== revision || cachedDb._updatedAt !== cloudData._updatedAt) {
+    saveDbLocalFileOnly(cloudData);
+    cloudRevision = revision;
   }
 }
 
-async function syncToFirestore(data: any) {
-  if (!firestoreDb || !data || firestoreQuotaExhausted) return;
-  try {
-    const docRef = doc(firestoreDb, "app_data", "main");
-    // Deep clone and strip out any undefined fields to comply with Firestore setDoc constraints
-    const sanitizedData = JSON.parse(JSON.stringify(data));
-    await setDoc(docRef, sanitizedData);
-    console.log("[Firebase Cloud Firestore] Database snapshot successfully saved to cloud.");
-  } catch (err: any) {
-    const errStr = String(err?.message || err);
-    if (err?.code === 'resource-exhausted' || err?.code === 8 || errStr.includes('RESOURCE_EXHAUSTED') || errStr.includes('Quota limit') || errStr.includes('Quota exceeded') || errStr.includes('quota')) {
-      markFirestoreQuotaExhausted();
-      console.warn("[Firebase Cloud Firestore] Free daily write quota exceeded for project. Cloud sync paused; local disk storage active.");
-    } else {
-      console.error("[Firebase Cloud Firestore] Error syncing data to cloud:", err);
-    }
-  }
-}
-
-async function syncFromFirestoreOnBoot() {
-  if (!firestoreDb || firestoreQuotaExhausted) return;
-  try {
-    const docRef = doc(firestoreDb, "app_data", "main");
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-      const cloudData: any = docSnap.data();
-      if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length > 0) {
-        let localData: any = null;
-        try { if (fs.existsSync(DB_FILE)) localData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
-        catch (err) { throw new Error('Local database is unreadable; cloud hydration stopped to preserve evidence.', { cause: err }); }
-        if (localData?._updatedAt && (!cloudData._updatedAt || localData._updatedAt > cloudData._updatedAt)) {
-          console.log('[Firebase Cloud Firestore] Local database is newer; retaining it and scheduling cloud sync.');
-          cachedDb = localData;
-          scheduleFirestoreSync(localData);
-        } else {
-          console.log("[Firebase Cloud Firestore] Hydrated database snapshot from Cloud Firestore!");
-          saveDbLocalFileOnly(cloudData);
-        }
-      }
-    }
-  } catch (err: any) {
-    const errStr = String(err?.message || err);
-    if (err?.code === 'resource-exhausted' || err?.code === 8 || errStr.includes('RESOURCE_EXHAUSTED') || errStr.includes('Quota limit') || errStr.includes('Quota exceeded') || errStr.includes('quota')) {
-      markFirestoreQuotaExhausted();
-      console.warn("[Firebase Cloud Firestore] Quota limit exceeded on boot read. Operating cleanly with local disk storage.");
-    } else {
-      console.error("[Firebase Cloud Firestore] Boot hydration error:", err);
-    }
-  }
-}
-
-// Finish cloud hydration before accepting requests, so an early write cannot overwrite it.
-const firestoreHydration = syncFromFirestoreOnBoot();
-
-function scheduleFirestoreSync(data: any) {
-  if (!firestoreDb || firestoreQuotaExhausted) return;
-  if (firestoreSyncTimer) {
-    clearTimeout(firestoreSyncTimer);
-  }
-  firestoreSyncTimer = setTimeout(() => {
-    firestoreSyncTimer = null;
-    firestoreWriteQueue = firestoreWriteQueue.then(() => syncToFirestore(data)).catch(err => {
-      console.error('[Firebase Cloud Firestore] Queued snapshot failed:', err);
-    });
-  }, 1000);
-}
+// The cloud document is authoritative. A checked-in or stale local JSON file never uploads on boot.
+const firestoreHydration = refreshFromCloud();
 
 function saveDb(data: any) {
   data._updatedAt = new Date().toISOString();
-  saveDbLocalFileOnly(data);
-  scheduleFirestoreSync(data);
+  if (!cloudDocument || !firestoreDb) {
+    saveDbLocalFileOnly(data);
+    return;
+  }
+  const sanitized = JSON.parse(JSON.stringify(data));
+  if (Buffer.byteLength(JSON.stringify(sanitized), 'utf8') > 900_000) {
+    throw new Error('Farm database is nearing the Firestore document limit. Export a backup before adding more records.');
+  }
+  cachedDb = sanitized;
+  const operation = cloudWriteQueue.then(async () => {
+    const nextRevision = await firestoreDb.runTransaction(async transaction => {
+      const snapshot = await transaction.get(cloudDocument);
+      if (!snapshot.exists) throw new CloudConflictError('The farm cloud database was removed.');
+      const currentRevision = Number(snapshot.data()?._revision ?? 0);
+      if (currentRevision !== cloudRevision) throw new CloudConflictError('Farm data changed on another device. Please reload and try again.');
+      transaction.set(cloudDocument, { ...sanitized, _revision: currentRevision + 1 });
+      return currentRevision + 1;
+    });
+    cloudRevision = nextRevision;
+    cachedDb = { ...sanitized, _revision: nextRevision };
+    try { saveDbLocalFileOnly(cachedDb); }
+    catch (error) { console.error('Cloud save succeeded, but the disposable local cache could not be updated:', error); }
+  });
+  cloudWriteQueue = operation.catch(() => {});
+  const pending = requestSaves.getStore();
+  if (pending) pending.push(operation);
+  else operation.catch(error => console.error('Background cloud update failed; next request will reload the authoritative data:', error));
 }
 
 function syncFlockWithAllRelatedTables(db: any, flock: any, oldName?: string) {
@@ -958,6 +903,7 @@ function verifyPassword(password: string, stored: string): boolean {
 async function startServer() {
   await firestoreHydration;
   const app = express();
+  app.set('trust proxy', 1);
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.NVF_HOST || '0.0.0.0';
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -969,6 +915,60 @@ async function startServer() {
   }
 
   app.use(express.json());
+
+  const allowedOrigins = new Set((process.env.NVF_ALLOWED_ORIGINS || '').split(',').map(origin => origin.trim()).filter(Boolean));
+  app.use('/api', (req, res, next) => {
+    const origin = req.get('Origin');
+    if (!origin) return next();
+    const sameHost = origin === `${req.protocol}://${req.get('host')}`;
+    if (!sameHost && !allowedOrigins.has(origin)) {
+      return res.status(403).json({ error: 'This app origin is not allowed to access the farm API.' });
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, If-None-Match, X-Auth-Token');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
+
+  // A family request sees the latest cloud revision and cannot report success until its write commits.
+  let apiRequestTail = Promise.resolve();
+  app.use('/api', async (_req, res, next) => {
+    if (!cloudDocument) return requestSaves.run([], next);
+    const previous = apiRequestTail;
+    let release!: () => void;
+    apiRequestTail = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    let released = false;
+    const finish = () => { if (!released) { released = true; release(); } };
+    res.once('finish', finish);
+    res.once('close', finish);
+    try {
+      await refreshFromCloud();
+    } catch (error) {
+      console.error('Cloud database is unavailable:', error);
+      return res.status(503).json({ error: 'Farm data is temporarily unavailable. No change was saved; please try again later.' });
+    }
+    requestSaves.run([], () => {
+      const send = res.send.bind(res);
+      res.send = ((body?: any) => {
+        const pending = requestSaves.getStore() || [];
+        if (!pending.length) return send(body);
+        Promise.all(pending).then(() => send(body)).catch(error => {
+          console.error('Cloud save failed:', error);
+          res.removeHeader('Content-Length');
+          res.status(error instanceof CloudConflictError ? 409 : 503);
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          send(JSON.stringify({ error: error instanceof CloudConflictError
+            ? 'Farm data changed on another device. Please reload and try again.'
+            : 'Farm data was not saved to the cloud. Please try again.' }));
+        });
+        return res;
+      }) as typeof res.send;
+      next();
+    });
+  });
 
   // --- AUTHENTICATION MIDDLEWARE ---
   function getAuthorizedUser(req: express.Request): any | null {

@@ -4,6 +4,7 @@
  */
 
 import { getOfflineDb, saveOfflineDb, executeLocalMutation, syncPendingQueue, getSyncQueue } from './offlineStore';
+import { apiUrl } from './apiOrigin';
 
 const originalFetch = window.fetch;
 
@@ -11,10 +12,11 @@ const originalFetch = window.fetch;
 export function setupOfflineInterceptor() {
   const customFetch = async function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const urlString = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const remoteInput = typeof input === 'string' ? apiUrl(input) : input;
 
     // Only intercept relative or absolute /api/ endpoints
     if (!urlString.includes('/api/')) {
-      return originalFetch.call(window, input, init);
+      return originalFetch.call(window, remoteInput, init);
     }
 
     const method = (init?.method || 'GET').toUpperCase();
@@ -37,7 +39,7 @@ export function setupOfflineInterceptor() {
           if (getSyncQueue().length > 0) {
             return new Response(JSON.stringify(getOfflineDb()), { status: 200, headers: { 'Content-Type': 'application/json', 'X-NVF-Offline': 'pending' } });
           }
-          const response = await originalFetch.call(window, input, init);
+          const response = await originalFetch.call(window, remoteInput, init);
           if (response.ok) {
             const cloned = response.clone();
             cloned.json().then(data => {
@@ -66,7 +68,7 @@ export function setupOfflineInterceptor() {
     if (urlString.includes('/api/auth/status') && method === 'GET') {
       if (navigator.onLine) {
         try {
-          return await originalFetch.call(window, input, init);
+          return await originalFetch.call(window, remoteInput, init);
         } catch (e) {}
       }
       return new Response(JSON.stringify({ setupRequired: false, userCount: 1, offlineMode: true }), {
@@ -96,14 +98,14 @@ export function setupOfflineInterceptor() {
 
       // Online: Try server request first
       try {
-        const response = await originalFetch.call(window, input, init);
+        const response = await originalFetch.call(window, remoteInput, init);
         if (response.ok) {
           const cloned = response.clone();
           cloned.json().then(() => {
             // Re-sync local cache snapshot when online mutation succeeds
             const currentToken = localStorage.getItem('nvf_operator_token');
             if (currentToken) {
-              originalFetch.call(window, '/api/data', { headers: { 'Authorization': currentToken } })
+              originalFetch.call(window, apiUrl('/api/data'), { headers: { 'Authorization': currentToken } })
                 .then(r => r.json())
                 .then(d => saveOfflineDb(d))
                 .catch(() => {});
@@ -132,7 +134,7 @@ export function setupOfflineInterceptor() {
 
     // Default fallback
     try {
-      return await originalFetch.call(window, input, init);
+      return await originalFetch.call(window, remoteInput, init);
     } catch (err) {
       return new Response(JSON.stringify({ error: 'Network unavailable' }), {
         status: 503,

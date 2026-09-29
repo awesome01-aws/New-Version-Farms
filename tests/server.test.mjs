@@ -16,9 +16,9 @@ async function freePort() {
 
 async function startServer(port, dataDir, envOverrides = {}) {
   const child = spawn(process.execPath, ['dist/server.cjs'], {
-    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', ...envOverrides }, stdio: 'ignore'
+    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', NVF_LOCAL_ONLY: '1', ...envOverrides }, stdio: 'ignore'
   });
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 200; i++) {
     if (child.exitCode !== null) throw new Error(`Server stopped with ${child.exitCode}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/auth/status`);
@@ -42,6 +42,8 @@ test('family sessions, shared records, offline rejection and durable storage', a
   const post = (path, body, token) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: token } : {}) }, body: JSON.stringify(body) });
   try {
     server = await startServer(port, dataDir);
+    assert.equal((await fetch(base + '/api/auth/status', { headers: { Origin: 'https://untrusted.example' } })).status, 403);
+    assert.equal((await fetch(base + '/api/auth/status', { headers: { Origin: base } })).status, 200);
     const worker = await (await fetch(base + '/sw.js')).text();
     assert.match(worker, /nvf-shell-[0-9a-f]{12}/);
     assert.match(worker, /\/assets\/IncubatorMod-/);
@@ -88,6 +90,26 @@ test('family sessions, shared records, offline rejection and durable storage', a
     assert.equal((await request('/api/data', { headers: { Authorization: child.body.token } })).status, 401);
   } finally {
     server?.kill();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('production refuses disposable local storage without explicit local-only mode', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nvf-no-cloud-test-'));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['dist/server.cjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', NVF_LOCAL_ONLY: '0' },
+    stdio: 'ignore'
+  });
+  try {
+    const exitCode = await Promise.race([
+      new Promise(resolve => child.once('exit', resolve)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Production server unexpectedly stayed alive')), 20000))
+    ]);
+    assert.notEqual(exitCode, 0);
+  } finally {
+    child.kill();
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
