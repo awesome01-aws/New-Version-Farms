@@ -907,7 +907,8 @@ async function startServer() {
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.NVF_HOST || '0.0.0.0';
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-  let localRecoveryAvailable = process.env.NVF_LOCAL_ACCOUNT_RECOVERY === '1' && !fs.existsSync(LOCAL_RECOVERY_MARKER);
+  let localRecoveryAvailable = process.env.NVF_LOCAL_ACCOUNT_RECOVERY === '1' &&
+    !cloudDocument && process.env.NVF_HOST === '127.0.0.1' && !fs.existsSync(LOCAL_RECOVERY_MARKER);
 
   function canUseLocalRecovery(req: express.Request): boolean {
     const address = req.socket.remoteAddress;
@@ -1723,7 +1724,7 @@ async function startServer() {
   });
 
   // Cages Management (Blocks & Cages in Farm)
-  app.get("/api/cages", (req, res) => {
+  app.get("/api/cages", requireAuth, (req, res) => {
     const db = loadDb();
     if (!db.cages) {
       db.cages = [...DEFAULT_CAGES];
@@ -1779,7 +1780,7 @@ async function startServer() {
   });
 
   // Live Cage Allocations (Live Cage Block Distribution Table)
-  app.get("/api/cage_allocations", (req, res) => {
+  app.get("/api/cage_allocations", requireAuth, (req, res) => {
     const db = loadDb();
     res.json(db.cage_allocations || []);
   });

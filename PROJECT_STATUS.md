@@ -82,4 +82,6 @@ Prepared deny-all browser Firestore rules and a deployment guide. The rule is **
 
 Added optional `VITE_API_BASE_URL` for a bundled Android build and an exact server origin allowlist through `NVF_ALLOWED_ORIGINS`. A wrapper around the deployed HTTPS site can continue using the same-origin API without configuration. Android device behavior and two-phone sync remain unverified.
 
+Final API audit found that the cage registry and allocation GET endpoints did not require a family session. Both now require sign-in, with regression assertions. The one-time local recovery route is now available only when the server itself is bound to `127.0.0.1` and no cloud database is configured.
+
 Verification: `pnpm run lint`, `pnpm run build`, and `pnpm run test` passed. Five automated tests cover local family sessions and persistence, local recovery, the production no-cloud startup guard, the Cameroon date boundary, and cloud acknowledgment/failure behavior using an isolated fake Firestore. The button audit covers 238 buttons. The cloud path has not been tested against a credentialed Firebase project; the existing local preview is deliberately isolated from live Firestore. Verify the reviewed GitHub revision and AI Studio project before deployment.

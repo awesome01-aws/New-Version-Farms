@@ -49,6 +49,8 @@ test('family sessions, shared records, offline rejection and durable storage', a
     assert.match(worker, /\/assets\/IncubatorMod-/);
     assert.doesNotMatch(worker, /__NVF_CACHE_NAME__/);
     assert.equal((await request('/api/data')).status, 401);
+    assert.equal((await request('/api/cages')).status, 401);
+    assert.equal((await request('/api/cage_allocations')).status, 401);
     assert.equal((await post('/api/auth/register', { username: 'dad', name: 'Dad', password: 'strong-pass-123' })).status, 200);
     assert.equal((await request('/api/data', { headers: { Authorization: 'dad' } })).status, 401);
     assert.equal((await post('/api/auth/register', { username: 'child', name: 'Child', password: 'strong-pass-456' })).status, 401);
