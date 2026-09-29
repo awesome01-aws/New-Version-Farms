@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -110,7 +110,51 @@ test('production refuses disposable local storage without explicit local-only mo
     assert.notEqual(exitCode, 0);
   } finally {
     child.kill();
-    rmSync(dataDir, { recursive: true, force: true });
+    if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('cloud mode ignores stale local data and acknowledges only committed Firestore writes', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nvf-cloud-test-'));
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const serverPath = join(process.cwd(), 'dist/server.cjs');
+  const mockPath = join(process.cwd(), 'tests/mockFirestore.cjs');
+  writeFileSync(join(dataDir, 'firebase-applet-config.json'), JSON.stringify({ projectId: 'test-project', firestoreDatabaseId: 'test-db' }));
+  writeFileSync(join(dataDir, 'db.json'), JSON.stringify({ users: [{ id: 'stale', username: 'stale', passwordHash: 'old', name: 'Stale' }] }));
+  const child = spawn(process.execPath, ['--require', mockPath, serverPath], {
+    cwd: dataDir,
+    env: { ...process.env, NODE_ENV: 'production', NVF_DATA_DIR: dataDir, PORT: String(port), NVF_LOCAL_ONLY: '0', NVF_TEST_FAIL_FIRST_WRITE: '1' },
+    stdio: 'ignore'
+  });
+  try {
+    let ready = false;
+    for (let i = 0; i < 200; i++) {
+      try {
+        const result = await fetch(base + '/api/auth/status');
+        if (result.ok) { ready = true; break; }
+      } catch (_) {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(ready, true);
+    assert.equal((await (await fetch(base + '/api/auth/status')).json()).userCount, 0);
+    const registration = () => fetch(base + '/api/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Dad', username: 'dad', password: 'strong-pass-123' })
+    });
+    const failed = await registration();
+    assert.equal(failed.status, 503);
+    assert.equal((await (await fetch(base + '/api/auth/status')).json()).userCount, 0);
+    const started = Date.now();
+    const saved = await registration();
+    assert.equal(saved.status, 200);
+    assert.ok(Date.now() - started >= 200, 'API must wait for the Firestore transaction');
+    assert.equal((await (await fetch(base + '/api/auth/status')).json()).userCount, 1);
+  } finally {
+    child.kill();
+    if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
