@@ -15,6 +15,9 @@ export interface ShortcutDef {
 }
 
 export const ALL_SHORTCUTS: Record<string, ShortcutDef> = {
+  rabbits: { id: 'rabbits', title: 'Add Rabbit', subtitle: 'Rabbits and litters', category: 'Farm', tab: 'farm', quickFormKey: 'rabbits', iconName: 'Rabbit', accent: 'emerald' },
+  quail: { id: 'quail', title: 'Manage Quail', subtitle: 'Birds, eggs and farm hatches', category: 'Farm', tab: 'farm', quickFormKey: 'quail', iconName: 'Egg', accent: 'teal' },
+  quail_flock_add: { id: 'quail_flock_add', title: 'Add Quail', subtitle: 'Start a quail flock', category: 'Farm', tab: 'farm', quickFormKey: 'quail_flock_add', iconName: 'Egg', accent: 'teal' },
   egg_collection: {
     id: 'egg_collection',
     title: 'Record Eggs',

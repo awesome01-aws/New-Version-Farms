@@ -80,9 +80,10 @@ export default function App() {
   const todayStr = getCameroonTodayISO();
   const todayTime = new Date(todayStr).getTime();
   const currentHour = new Date().getHours();
-  const hasEggRecordToday = (db.daily_egg_collections || []).some(rec => rec.date === todayStr);
+  const hasEggRecordToday = (db.daily_egg_collections || []).some(rec => rec.date === todayStr && rec.poultryRecorded !== false);
 
   const incubatorRemindersCount = db.incubator_records?.reduce((acc, rec) => {
+    if (rec.ownerType === 'farm') return acc;
     const broughtTime = new Date(rec.dateBrought).getTime();
     const daysDiff = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
     const species = rec.eggType || 'Brahma';
@@ -333,6 +334,7 @@ export default function App() {
         setActiveTab={setActiveTab}
         onOpenEditRecord={handleOpenEditRecord}
         onOpenClient={handleOpenClient}
+        onOpenFarmSection={section => { setQuickFormKey(section); setActiveTab('farm'); }}
       />}
 
       {/* Modern sliding notifications hub drawer overlay */}

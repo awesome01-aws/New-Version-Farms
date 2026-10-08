@@ -8,13 +8,15 @@ import {
   Plus, Minus, Egg, Heart, Trash2, Calendar, Edit3, DollarSign, Package, User, AlertCircle, ShoppingCart, ArrowRightLeft, MoveRight, Home, Layers, Search, ArrowUpDown, SlidersHorizontal, Grid, Check, X, ChevronDown, Filter, Building, CheckCircle2, History, Maximize2, Minimize2, Sprout, ZoomIn, ZoomOut, RotateCcw,
   Receipt, Utensils, UtensilsCrossed, Skull, TrendingDown, Sparkles, LayoutGrid
 } from 'lucide-react';
-import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord } from '../types';
+import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord, DbSchema, IncubatorRecord } from '../types';
+import { RabbitSection, QuailSection } from './FarmAnimalsMod';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
 import { getCameroonTodayISO, formatDateDDMMYYYY, parseDateToISO, calculateCurrentAgeWeeks, formatFlockAge, formatAgeDisplay, calculateFlockAge, parseNumericAgeWeeks } from '../utils/dateUtils';
 
 interface PoultryModProps {
-  data: {
+  data: Partial<DbSchema> & {
+    incubator_records: IncubatorRecord[];
     flocks: Flock[];
     feed_records: FeedRecord[];
     poultry_sales: PoultrySale[];
@@ -277,11 +279,21 @@ export default function PoultryMod({
 
   // Collapsible state toggles
   const [activeFormSection, setActiveFormSection] = useState<string | null>(quickFormKey);
-  const [farmSubSection, setFarmSubSection] = useState<'overview' | 'all' | 'flocks' | 'eggs' | 'sales' | 'feed' | 'mortality' | 'eaten' | 'expenses'>('overview');
+  const [farmSubSection, setFarmSubSection] = useState<'overview' | 'all' | 'flocks' | 'rabbits' | 'quail' | 'eggs' | 'sales' | 'feed' | 'mortality' | 'eaten' | 'expenses'>('overview');
+  const [rabbitShortcutVersion, setRabbitShortcutVersion] = useState(0);
+  const [quailShortcutVersion, setQuailShortcutVersion] = useState(0);
 
   React.useEffect(() => {
     if (quickFormKey) {
-      if (quickFormKey === 'egg_collection' || quickFormKey === 'egg') {
+      if (quickFormKey === 'rabbit_add' || quickFormKey === 'rabbits') {
+        setActiveFormSection('rabbit_add');
+        setFarmSubSection('rabbits');
+      } else if (quickFormKey === 'quail' || quickFormKey === 'quail_eggs') {
+        setFarmSubSection('quail');
+      } else if (quickFormKey === 'quail_flock_add') {
+        setActiveFormSection('quail_flock_add');
+        setFarmSubSection('quail');
+      } else if (quickFormKey === 'egg_collection' || quickFormKey === 'egg') {
         setIsEggCollFormOpen(true);
         setFarmSubSection('eggs');
       } else if (quickFormKey === 'flock' || quickFormKey === 'transfer') {
@@ -851,7 +863,7 @@ export default function PoultryMod({
         throw new Error(resData.error || 'Failed to save egg collection log.');
       }
 
-      setSuccessMsg(`Daily egg collection for ${payload.date} logged successfully! (${payload.brahmaEggs} Brahma + ${payload.turkeyEggs} Turkey = ${payload.brahmaEggs + payload.turkeyEggs} total)`);
+      setSuccessMsg(`Egg collection for ${payload.date} saved. Total across Brahma, Turkey and Quail: ${resData.record?.totalEggs ?? payload.brahmaEggs + payload.turkeyEggs}.`);
       setEggFormBrahma('');
       setEggFormTurkey('');
       setEggFormNotes('');
@@ -988,6 +1000,7 @@ export default function PoultryMod({
   // Feed
   const [feedDate, setFeedDate] = useState(getCameroonTodayISO());
   const [feedType, setFeedType] = useState('Starter');
+  const [feedSpecies, setFeedSpecies] = useState<'Poultry' | 'Rabbit' | 'Quail'>('Poultry');
   const [feedBags, setFeedBags] = useState('');
   const [feedWeight, setFeedWeight] = useState('50'); // standard kg bag
   const [feedCostBag, setFeedCostBag] = useState('');
@@ -1059,8 +1072,8 @@ export default function PoultryMod({
   );
 
   const feedFormValues = React.useMemo(() => ({
-    feedDate, feedType, feedBags, feedWeight, feedCostBag, feedRemaining
-  }), [feedDate, feedType, feedBags, feedWeight, feedCostBag, feedRemaining]);
+    feedDate, feedType, feedSpecies, feedBags, feedWeight, feedCostBag, feedRemaining
+  }), [feedDate, feedType, feedSpecies, feedBags, feedWeight, feedCostBag, feedRemaining]);
 
   const { hasRestoredDraft: hasFeedDraft, clearDraft: clearFeedDraft } = useFormAutoSave(
     'nvf_draft_feed',
@@ -1068,6 +1081,7 @@ export default function PoultryMod({
     (draft) => {
       if (draft.feedDate !== undefined) setFeedDate(draft.feedDate);
       if (draft.feedType !== undefined) setFeedType(draft.feedType);
+      if (draft.feedSpecies !== undefined) setFeedSpecies(draft.feedSpecies);
       if (draft.feedBags !== undefined) setFeedBags(draft.feedBags);
       if (draft.feedWeight !== undefined) setFeedWeight(draft.feedWeight);
       if (draft.feedCostBag !== undefined) setFeedCostBag(draft.feedCostBag);
@@ -1626,6 +1640,7 @@ export default function PoultryMod({
     submitRecord('/api/feed', {
       date: feedDate,
       feedType: feedType,
+      species: feedSpecies,
       bagsBought: Number(feedBags),
       weightPerBag: Number(feedWeight),
       costBag: Number(feedCostBag),
@@ -2045,7 +2060,7 @@ export default function PoultryMod({
       <div className="px-1"><h1 className="text-2xl font-bold tracking-tight text-emerald-950">Farm records</h1><p className="text-sm text-slate-600">Choose what you want to manage today.</p></div>
       <label className="block sm:hidden text-sm font-semibold text-emerald-950">Farm section
         <select aria-label="Farm section" value={farmSubSection} onChange={event => setFarmSubSection(event.target.value as typeof farmSubSection)} className="mt-2 h-13 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-base text-emerald-950">
-          <option value="overview">Overview</option><option value="flocks">Flocks and cages</option><option value="eggs">Egg collection</option><option value="sales">Sales</option><option value="feed">Feed</option><option value="mortality">Bird loss</option><option value="eaten">Birds eaten</option><option value="expenses">Expenses</option><option value="all">View all records</option>
+          <option value="overview">Overview</option><option value="rabbits">Rabbits</option><option value="quail">Quail</option><option value="flocks">Flocks and cages</option><option value="eggs">Egg collection</option><option value="sales">Sales</option><option value="feed">Feed</option><option value="mortality">Bird loss</option><option value="eaten">Birds eaten</option><option value="expenses">Expenses</option><option value="all">View all records</option>
         </select>
       </label>
       <nav aria-label="Farm sections" className="hidden sm:flex items-center gap-2 p-1.5 bg-emerald-50 rounded-2xl border border-emerald-100 overflow-x-auto select-none touch-pan-x scrollbar-none">
@@ -2053,6 +2068,8 @@ export default function PoultryMod({
           { id: 'overview', label: 'Overview', icon: <LayoutGrid size={16} className="shrink-0" /> },
           { id: 'all', label: 'View all', icon: <LayoutGrid size={14} className="shrink-0" /> },
           { id: 'flocks', label: 'Flocks & Cages', icon: <Layers size={14} className="shrink-0" />, count: totalChickens + totalTurkeys },
+          { id: 'rabbits', label: 'Rabbits', icon: <span aria-hidden="true">🐇</span>, count: (data.rabbits || []).filter(item => item.status === 'active').length },
+          { id: 'quail', label: 'Quail', icon: <span aria-hidden="true">🐦</span>, count: data.flocks.filter(item => item.species === 'Quail').reduce((sum, item) => sum + item.quantity, 0) },
           { id: 'eggs', label: 'Daily Egg Yield', icon: <Sparkles size={14} className="shrink-0" />, count: (data.daily_egg_collections || []).length },
           { id: 'sales', label: 'Sales & Revenue', icon: <DollarSign size={14} className="shrink-0" />, count: (data.poultry_sales || []).length },
           { id: 'feed', label: 'Feed Stock', icon: <Package size={14} className="shrink-0" />, count: (data.feed_records || []).length },
@@ -2071,6 +2088,8 @@ export default function PoultryMod({
                   setTimeout(() => {
                     const el = document.getElementById(
                       tab.id === 'flocks' ? 'section_flocks' :
+                      tab.id === 'rabbits' ? 'section_rabbits' :
+                      tab.id === 'quail' ? 'section_quail' :
                       tab.id === 'eggs' ? 'section_egg_collections' :
                       tab.id === 'sales' ? 'section_sales' :
                       tab.id === 'feed' ? 'section_feed' :
@@ -2208,14 +2227,25 @@ export default function PoultryMod({
             </div>
           </div>
         </div>
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-emerald-100 flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-3"><div><h3 className="text-base font-bold text-emerald-950">🐇 Rabbits</h3><p className="text-sm text-slate-600">Adults, litters and hutches</p></div><strong className="text-xl text-emerald-900">{(data.rabbits || []).filter(item => item.status === 'active').length}</strong></div>
+          <div className="grid grid-cols-2 gap-2"><button type="button" className="min-h-12 rounded-xl bg-emerald-700 px-3 text-sm font-semibold text-white" onClick={() => { setActiveFormSection('rabbit_add'); setRabbitShortcutVersion(value => value + 1); setFarmSubSection('rabbits'); }}>+ Add rabbit</button><button type="button" className="min-h-12 rounded-xl border border-emerald-200 px-3 text-sm font-semibold text-emerald-900" onClick={() => setFarmSubSection('rabbits')}>Manage rabbits</button></div>
+        </div>
+        <div className="bg-white rounded-3xl p-5 shadow-sm border border-emerald-100 flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-3"><div><h3 className="text-base font-bold text-emerald-950">🐦 Quail</h3><p className="text-sm text-slate-600">Birds, eggs and farm hatches</p></div><strong className="text-xl text-emerald-900">{data.flocks.filter(item => item.species === 'Quail').reduce((sum, item) => sum + item.quantity, 0)}</strong></div>
+          <div className="grid grid-cols-2 gap-2"><button type="button" className="min-h-12 rounded-xl bg-emerald-700 px-3 text-sm font-semibold text-white" onClick={() => { setActiveFormSection('quail_flock_add'); setQuailShortcutVersion(value => value + 1); setFarmSubSection('quail'); }}>+ Add quail</button><button type="button" className="min-h-12 rounded-xl border border-emerald-200 px-3 text-sm font-semibold text-emerald-900" onClick={() => setFarmSubSection('quail')}>Manage quail</button></div>
+        </div>
       </div>
+
+      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'rabbits'}><RabbitSection key={rabbitShortcutVersion} data={data} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'rabbit_add' ? 'rabbit_add' : undefined} /></div>
+      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'quail'}><QuailSection key={quailShortcutVersion} data={data} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'quail_flock_add' ? 'quail_flock_add' : undefined} /></div>
 
       {/* SECTION 1: FLOCKS */}
       <div id="section_flocks" hidden={farmSubSection !== 'all' && farmSubSection !== 'flocks'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
-            <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">1. Brahma Flocks & Cage Inventory</h3>
-            <p className="text-slate-400 text-xs font-semibold">Track currently raised family fowls, cage locations & transfers</p>
+            <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Bird flocks & cages</h3>
+            <p className="text-slate-400 text-xs font-semibold">Track chickens, turkeys and quail in their cages</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -2223,10 +2253,10 @@ export default function PoultryMod({
               className={`cursor-pointer px-3.5 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors ${
                 activeFormSection === 'transfer' ? 'bg-amber-600 text-white shadow' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
               }`}
-              title="Transfer Fowls Between Cages"
+              title="Move birds between cages"
             >
               <ArrowRightLeft size={14} />
-              <span>Transfer Fowls</span>
+              <span>Move birds</span>
             </button>
             <button
               id="toggle_flocks_form"
@@ -2236,7 +2266,7 @@ export default function PoultryMod({
                   ? 'bg-rose-600 hover:bg-rose-700 text-white'
                   : 'bg-emerald-600 hover:bg-emerald-700 text-white'
               }`}
-              title="Add New Fowl Batch"
+              title="Add a bird flock"
             >
               {activeFormSection === 'flock' ? <Minus size={16} /> : <Plus size={16} />}
               <span>{activeFormSection === 'flock' ? 'Close Form' : '+ Add Fowl / Turkey Batch'}</span>
@@ -2247,7 +2277,7 @@ export default function PoultryMod({
         {/* Collapsible Form */}
         {activeFormSection === 'flock' && (
           <form id="form_section_flock" onSubmit={handleAddFlock} className="scroll-mt-20 bg-slate-50/50 p-4 rounded-2xl border border-slate-100 space-y-4 mb-6">
-            <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Add New Fowl Batch</h4>
+            <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Add a bird flock</h4>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -2558,7 +2588,7 @@ export default function PoultryMod({
                   <ArrowRightLeft size={16} />
                 </div>
                 <div>
-                  <h4 className="text-sm font-black text-amber-950 uppercase tracking-wider">Transfer Fowls Between Cages</h4>
+                  <h4 className="text-sm font-black text-amber-950 uppercase tracking-wider">Move birds between cages</h4>
                   <p className="text-[11px] font-semibold text-amber-700">Move birds across farm blocks with real-time distribution updates</p>
                 </div>
               </div>
@@ -2925,7 +2955,7 @@ export default function PoultryMod({
           <div className="flex items-center justify-between mb-2 mt-3 px-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
-                Fowl Batches Master Log ({filteredFlocks.length})
+                Bird flocks ({filteredFlocks.length})
               </span>
             </div>
             <button
@@ -3874,7 +3904,7 @@ export default function PoultryMod({
               type="button"
               onClick={() => setFullscreenTable({
                 title: "DAILY FARM EGG COLLECTION LOG TABLE",
-                subtitle: "Daily collection tracking for Brahma chickens and Turkeys",
+                subtitle: "Daily collection tracking for Brahma, Turkey and Quail",
                 badge: `${sortedEggCollections.length} Days Logged`,
                 icon: <Egg size={20} />,
                 content: (
@@ -3885,6 +3915,7 @@ export default function PoultryMod({
                           <th className="p-2">DATE</th>
                           <th className="p-2">🐔 BRAHMA</th>
                           <th className="p-2">🦃 TURKEY</th>
+                          <th className="p-2">🐦 QUAIL</th>
                           <th className="p-2">🥚 TOTAL</th>
                           <th className="p-2">RECORDED BY</th>
                           <th className="p-2">NOTES</th>
@@ -3896,7 +3927,8 @@ export default function PoultryMod({
                             <td className="p-2 font-mono font-bold text-slate-900 text-[10px]">{formatDateDDMMYYYY(rec.date)}</td>
                             <td className="p-2 font-black text-amber-900">{rec.brahmaEggs || 0}</td>
                             <td className="p-2 font-black text-orange-900">{rec.turkeyEggs || 0}</td>
-                            <td className="p-2 font-black text-emerald-800">{(rec.brahmaEggs || 0) + (rec.turkeyEggs || 0)}</td>
+                            <td className="p-2 font-black text-sky-900">{rec.quailEggs || 0}</td>
+                            <td className="p-2 font-black text-emerald-800">{rec.totalEggs || 0}</td>
                             <td className="p-2 text-slate-700">{rec.recordedBy || '-'}</td>
                             <td className="p-2 text-slate-500 text-[10px]">{rec.notes || '-'}</td>
                           </tr>
@@ -3923,6 +3955,7 @@ export default function PoultryMod({
                 <th className="p-3">Collection Date</th>
                 <th className="p-3">🐔 Brahma Eggs</th>
                 <th className="p-3">🦃 Turkey Eggs</th>
+                <th className="p-3">🐦 Quail Eggs</th>
                 <th className="p-3">🥚 Total Daily Eggs</th>
                 <th className="p-3">Recorded By</th>
                 <th className="p-3">Notes / Remarks</th>
@@ -3932,7 +3965,7 @@ export default function PoultryMod({
             <tbody className="divide-y divide-slate-100 font-medium text-slate-700 text-sm">
               {sortedEggCollections.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-slate-400 font-bold bg-slate-50/40">
+                  <td colSpan={8} className="p-6 text-center text-slate-400 font-bold bg-slate-50/40">
                     No daily egg collection records found. Click "Log Daily Eggs" to record today's yield.
                   </td>
                 </tr>
@@ -3959,6 +3992,7 @@ export default function PoultryMod({
                           {rec.turkeyEggs} eggs
                         </span>
                       </td>
+                      <td className="p-3"><span className="px-2.5 py-1 bg-sky-50 text-sky-900 font-bold text-xs rounded-full border border-sky-200">{rec.quailEggs || 0} eggs</span></td>
                       <td className="p-3">
                         <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 font-black text-xs rounded-full border border-emerald-200 font-mono">
                           {rec.totalEggs} eggs
@@ -4051,6 +4085,15 @@ export default function PoultryMod({
                   <option value="Starter">Starter</option>
                   <option value="Grower">Grower</option>
                   <option value="Layers">Layers</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">For animals</label>
+                <select value={feedSpecies} onChange={(e) => setFeedSpecies(e.target.value as 'Poultry' | 'Rabbit' | 'Quail')} className={largeInputClass}>
+                  <option value="Poultry">Chickens or turkeys</option>
+                  <option value="Rabbit">Rabbits</option>
+                  <option value="Quail">Quail</option>
                 </select>
               </div>
 
@@ -4177,7 +4220,7 @@ export default function PoultryMod({
                       {data.feed_records.map((feed) => (
                         <tr key={feed.id} className="hover:bg-amber-50/20 transition-colors">
                           <td className="p-2.5 font-mono text-slate-600">{formatDateDDMMYYYY(feed.date)}</td>
-                          <td className="p-2.5 font-bold text-slate-900">{feed.feedType}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{feed.feedType} <span className="text-slate-500">· {feed.species || 'Poultry'}</span></td>
                           <td className="p-2.5 font-black text-slate-900">{feed.bagsBought} bags ({feed.weightPerBag}kg)</td>
                           <td className="p-2.5 font-mono text-slate-700">{(feed.costBag || 0).toLocaleString()} FCFA</td>
                           <td className="p-2.5 font-mono font-bold text-emerald-800">{(feed.totalCost || 0).toLocaleString()} FCFA</td>
@@ -4248,7 +4291,7 @@ export default function PoultryMod({
                         />
                       </td>
                       <td className="p-3 text-xs text-slate-500 font-mono">{formatDateDDMMYYYY(fed.date)}</td>
-                      <td className="p-3 font-bold text-slate-900">{fed.feedType}</td>
+                      <td className="p-3 font-bold text-slate-900">{fed.feedType} <span className="text-slate-500">· {fed.species || 'Poultry'}</span></td>
                       <td className="p-3">{fed.bagsBought} bags ({fed.weightPerBag}kg)</td>
                       <td className="p-3 text-xs">{fed.costBag.toLocaleString()} FCFA</td>
                       <td className="p-3 text-emerald-700 font-extrabold">{fed.totalCost.toLocaleString()} FCFA</td>

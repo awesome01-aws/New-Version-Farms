@@ -12,6 +12,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import XLSX from "xlsx";
 import { initializeApp, applicationDefault } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { applyFarmAction, ensureFarmArrays, quailEggBalance } from './src/lib/farmActions';
 
 function cameroonDate(date: Date = new Date()): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
@@ -682,6 +683,7 @@ function loadDb(): any {
   if (!Array.isArray(db.cage_transfers)) db.cage_transfers = [];
   if (!Array.isArray(db.daily_egg_collections)) db.daily_egg_collections = [];
   if (!Array.isArray(db.fowls_eaten)) db.fowls_eaten = [];
+  ensureFarmArrays(db);
 
   // An intentionally empty flock list is valid. Seeding happens only when a new DB is created.
 
@@ -1160,8 +1162,29 @@ async function startServer() {
       cages: db.cages || [],
       cage_allocations: db.cage_allocations || [],
       daily_egg_collections: db.daily_egg_collections || [],
-      fowls_eaten: db.fowls_eaten || []
+      fowls_eaten: db.fowls_eaten || [],
+      rabbits: db.rabbits || [],
+      rabbit_hutches: db.rabbit_hutches || [],
+      rabbit_breedings: db.rabbit_breedings || [],
+      rabbit_litters: db.rabbit_litters || [],
+      rabbit_moves: db.rabbit_moves || [],
+      rabbit_losses: db.rabbit_losses || [],
+      rabbit_sales: db.rabbit_sales || [],
+      animal_care: db.animal_care || [],
+      quail_egg_use: db.quail_egg_use || []
     });
+  });
+
+  // A single validated operation keeps linked animals, stock, sales and egg use together.
+  app.post('/api/farm/actions', requireAuth, (req, res) => {
+    try {
+      const db = loadDb();
+      const result = applyFarmAction(db, req.body);
+      saveDb(db);
+      res.json({ success: true, result });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Could not save farm record.' });
+    }
   });
 
   // GET simple db configuration
@@ -1389,7 +1412,7 @@ async function startServer() {
   // Feed Records
   app.post("/api/feed", requireAuth, (req, res) => {
     const db = loadDb();
-    const { id, date, feedType, bagsBought, weightPerBag, costBag, stockRemaining } = req.body;
+    const { id, date, feedType, species, bagsBought, weightPerBag, costBag, stockRemaining } = req.body;
 
     if (!date || !feedType || bagsBought === undefined || weightPerBag === undefined || costBag === undefined || stockRemaining === undefined) {
       return res.status(400).json({ error: "Missing required feed record fields." });
@@ -1406,6 +1429,7 @@ async function startServer() {
       id: feedId,
       date: String(date),
       feedType: String(feedType).trim(),
+      species: species === 'Rabbit' || species === 'Quail' ? species : 'Poultry',
       bagsBought: Number(bagsBought),
       weightPerBag: Number(weightPerBag),
       costBag: Number(costBag),
@@ -1428,7 +1452,7 @@ async function startServer() {
     const index = db.feed_records.findIndex((f: any) => f.id === id);
     if (index === -1) return res.status(404).json({ error: "Feed record not found." });
 
-    const { date, feedType, bagsBought, weightPerBag, costBag, stockRemaining } = req.body;
+    const { date, feedType, species, bagsBought, weightPerBag, costBag, stockRemaining } = req.body;
     const item = db.feed_records[index];
 
     if (bagsBought !== undefined && !isValidNonNegativeNumber(bagsBought)) {
@@ -1451,6 +1475,7 @@ async function startServer() {
       ...item,
       date: date !== undefined ? String(date) : item.date,
       feedType: feedType !== undefined ? String(feedType).trim() : item.feedType,
+      species: species === undefined ? item.species : (species === 'Rabbit' || species === 'Quail' ? species : 'Poultry'),
       bagsBought: updatedBags,
       weightPerBag: weightPerBag !== undefined ? Number(weightPerBag) : item.weightPerBag,
       costBag: updatedCost,
@@ -2108,16 +2133,22 @@ function calculateCurrentAgeWeeks(
     const recDate = date || cameroonDate();
     const bEggs = Math.max(0, Number(brahmaEggs) || 0);
     const tEggs = Math.max(0, Number(turkeyEggs) || 0);
-    const total = bEggs + tEggs;
 
     const recId = id || crypto.randomUUID();
+    if (req.body.quailEggs !== undefined && (!Number.isSafeInteger(Number(req.body.quailEggs)) || Number(req.body.quailEggs) < 0)) return res.status(400).json({ error: 'Quail eggs must be a non-negative whole number.' });
     const existingIdx = db.daily_egg_collections.findIndex((e: any) => e.id === recId || e.date === recDate);
+    const qEggs = req.body.quailEggs !== undefined
+      ? Math.max(0, Number(req.body.quailEggs) || 0)
+      : (existingIdx !== -1 ? Number(db.daily_egg_collections[existingIdx].quailEggs) || 0 : 0);
+    const total = bEggs + tEggs + qEggs;
 
     const newRecord = {
       id: existingIdx !== -1 ? db.daily_egg_collections[existingIdx].id : recId,
       date: recDate,
       brahmaEggs: bEggs,
       turkeyEggs: tEggs,
+      quailEggs: qEggs,
+      poultryRecorded: true,
       totalEggs: total,
       recordedBy: recordedBy ? String(recordedBy).trim() : ((req as any).user?.name || "Operator"),
       notes: notes ? String(notes).trim() : ""
@@ -2128,6 +2159,7 @@ function calculateCurrentAgeWeeks(
     } else {
       db.daily_egg_collections.push(newRecord);
     }
+    if (quailEggBalance(db) < 0) return res.status(400).json({ error: 'This would make quail egg stock negative.' });
 
     saveDb(db);
     res.json({ success: true, record: newRecord, daily_egg_collections: db.daily_egg_collections });
@@ -2140,20 +2172,26 @@ function calculateCurrentAgeWeeks(
     if (idx === -1) return res.status(404).json({ error: "Egg collection record not found." });
 
     const existing = db.daily_egg_collections[idx];
+    if (req.body.quailEggs !== undefined && (!Number.isSafeInteger(Number(req.body.quailEggs)) || Number(req.body.quailEggs) < 0)) return res.status(400).json({ error: 'Quail eggs must be a non-negative whole number.' });
+    if (req.body.date && db.daily_egg_collections.some((item: any, index: number) => index !== idx && item.date === req.body.date)) return res.status(400).json({ error: 'An egg collection already exists for that date.' });
     const bEggs = req.body.brahmaEggs !== undefined ? Math.max(0, Number(req.body.brahmaEggs)) : existing.brahmaEggs;
     const tEggs = req.body.turkeyEggs !== undefined ? Math.max(0, Number(req.body.turkeyEggs)) : existing.turkeyEggs;
+    const qEggs = req.body.quailEggs !== undefined ? Math.max(0, Number(req.body.quailEggs)) : (Number(existing.quailEggs) || 0);
 
     const updated = {
       ...existing,
       date: req.body.date || existing.date,
       brahmaEggs: bEggs,
       turkeyEggs: tEggs,
-      totalEggs: bEggs + tEggs,
+      quailEggs: qEggs,
+      poultryRecorded: true,
+      totalEggs: bEggs + tEggs + qEggs,
       notes: req.body.notes !== undefined ? String(req.body.notes).trim() : existing.notes,
       recordedBy: req.body.recordedBy !== undefined ? String(req.body.recordedBy).trim() : existing.recordedBy
     };
 
     db.daily_egg_collections[idx] = updated;
+    if (quailEggBalance(db) < 0) return res.status(400).json({ error: 'This would make quail egg stock negative.' });
     saveDb(db);
     res.json({ success: true, record: updated, daily_egg_collections: db.daily_egg_collections });
   });
@@ -2164,7 +2202,12 @@ function calculateCurrentAgeWeeks(
     const idx = db.daily_egg_collections.findIndex((e: any) => e.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: "Egg collection record not found." });
 
-    db.daily_egg_collections.splice(idx, 1);
+    const existing = db.daily_egg_collections[idx];
+    if ((Number(existing.quailEggs) || 0) > 0) {
+      db.daily_egg_collections[idx] = { ...existing, brahmaEggs: 0, turkeyEggs: 0, totalEggs: Number(existing.quailEggs) || 0, poultryRecorded: false, recordedBy: '', notes: '' };
+    } else {
+      db.daily_egg_collections.splice(idx, 1);
+    }
     saveDb(db);
     res.json({ success: true, daily_egg_collections: db.daily_egg_collections });
   });
@@ -2533,6 +2576,7 @@ function calculateCurrentAgeWeeks(
     client.overdraft = client.overdraft || 0;
     const batchId = id || crypto.randomUUID();
     const existsIndex = db.incubator_records.findIndex((r: any) => r.id === batchId);
+    if (existsIndex !== -1 && db.incubator_records[existsIndex].ownerType === 'farm') return res.status(409).json({ error: 'Manage farm-owned quail batches in Farm → Quail.' });
 
     // Revert old batch overdraft impact if re-saving/updating existing
     if (existsIndex !== -1) {
@@ -2800,6 +2844,7 @@ function calculateCurrentAgeWeeks(
       notes
     } = req.body;
     const record = db.incubator_records[index];
+    if (record.ownerType === 'farm') return res.status(409).json({ error: 'Manage farm-owned quail batches in Farm → Quail.' });
 
     if (dateBrought !== undefined && dateBrought !== "") {
       record.dateBrought = String(dateBrought);
@@ -2930,6 +2975,7 @@ function calculateCurrentAgeWeeks(
   app.delete("/api/incubator/:id", requireAuth, (req, res) => {
     const db = loadDb();
     const record = db.incubator_records.find((r: any) => r.id === req.params.id);
+    if (record?.ownerType === 'farm') return res.status(409).json({ error: 'Farm-owned quail batches cannot be deleted here.' });
     if (record) {
       const client = db.clients.find((c: any) => c.id === record.clientId);
       if (client) {
@@ -2961,6 +3007,7 @@ function calculateCurrentAgeWeeks(
     if (!key || !(key in db)) {
       return res.status(400).json({ error: "Invalid type specified for bulk delete" });
     }
+    if (type === 'incubator' && db.incubator_records.some((record: any) => record.ownerType === 'farm' && ids.includes(record.id))) return res.status(409).json({ error: 'Farm-owned quail batches cannot be deleted here.' });
     
     db[key] = (db[key] as any[]).filter((r: any) => !ids.includes(r.id));
     saveDb(db);
@@ -2987,6 +3034,7 @@ function calculateCurrentAgeWeeks(
     if (!key || !(key in db)) {
       return res.status(400).json({ error: "Invalid type specified for bulk update" });
     }
+    if (type === 'incubator' && db.incubator_records.some((record: any) => record.ownerType === 'farm' && ids.includes(record.id))) return res.status(409).json({ error: 'Manage farm-owned quail batches in Farm → Quail.' });
     
     db[key] = (db[key] as any[]).map((r: any) => {
       if (ids.includes(r.id)) {
@@ -3034,6 +3082,14 @@ function calculateCurrentAgeWeeks(
 
     const db = loadDb();
     let processedCount = 0;
+
+    const farmBatchIds = new Set(db.incubator_records.filter((record: any) => record.ownerType === 'farm').map((record: any) => record.id));
+    if (items.some((item: any) => {
+      const endpoint = String(item?.endpoint || '');
+      if (endpoint === '/api/incubator' && item?.body?.id && farmBatchIds.has(item.body.id)) return true;
+      if (endpoint.startsWith('/api/incubator/') && farmBatchIds.has(endpoint.slice('/api/incubator/'.length))) return true;
+      return (endpoint === '/api/bulk-delete' || endpoint === '/api/bulk-update') && item?.body?.type === 'incubator' && Array.isArray(item.body.ids) && item.body.ids.some((id: string) => farmBatchIds.has(id));
+    })) return res.status(409).json({ error: 'Manage farm-owned quail batches in Farm → Quail.' });
 
     // Process items in timestamp order (prioritizing latest entries chronologically)
     const sortedItems = [...items].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
@@ -3086,6 +3142,7 @@ function calculateCurrentAgeWeeks(
               id: feedId,
               date: String(body.date || cameroonDate()),
               feedType: String(body.feedType).trim(),
+              species: body.species === 'Rabbit' || body.species === 'Quail' ? body.species : 'Poultry',
               bagsBought: Number(body.bagsBought || 0),
               weightPerBag: Number(body.weightPerBag || 50),
               costBag: Number(body.costBag || 0),

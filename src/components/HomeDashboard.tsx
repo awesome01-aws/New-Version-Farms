@@ -1,6 +1,6 @@
 import React from 'react';
-import { ArrowRight, ArrowRightLeft, Bird, Egg, HeartPulse, Package, Receipt, ShoppingBag, Users, Utensils, BarChart3, Plus, X, RotateCcw } from 'lucide-react';
-import { ActiveTab, DailyEggCollection, Expense, FeedRecord, Flock, IncubatorRecord, PoultrySale } from '../types';
+import { ArrowRight, ArrowRightLeft, Bird, Egg, HeartPulse, Package, Receipt, ShoppingBag, Users, Utensils, BarChart3, Plus, X, RotateCcw, Rabbit } from 'lucide-react';
+import { ActiveTab, DailyEggCollection, Expense, FeedRecord, Flock, IncubatorRecord, PoultrySale, RabbitSale } from '../types';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 
@@ -9,6 +9,7 @@ interface Props {
     flocks: Flock[];
     incubator_records: IncubatorRecord[];
     poultry_sales: PoultrySale[];
+    rabbit_sales?: RabbitSale[];
     daily_egg_collections?: DailyEggCollection[];
     feed_records?: FeedRecord[];
     expenses?: Expense[];
@@ -39,6 +40,7 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
 
   const hatcheryTasks: HatcheryTask[] = [];
   for (const record of db.incubator_records || []) {
+    if (record.ownerType === 'farm') continue;
     if (record.chicksHatched != null) continue;
     const broughtTime = Date.parse(`${record.dateBrought}T00:00:00Z`);
     if (!Number.isFinite(broughtTime)) continue;
@@ -61,7 +63,7 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     .sort((a, b) => b.record.dateBrought.localeCompare(a.record.dateBrought));
   const displayedTasks = showAllTasks ? visibleTasks : visibleTasks.slice(0, 3);
   const hourAtFarm = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(new Date()));
-  const eggReminderDue = hourAtFarm >= 18 && !(db.daily_egg_collections || []).some(record => record.date === today) && !eggReminderDismissed;
+  const eggReminderDue = hourAtFarm >= 18 && !(db.daily_egg_collections || []).some(record => record.date === today && record.poultryRecorded !== false) && !eggReminderDismissed;
 
   const inLastSevenDays = (date: string) => {
     const recordTime = Date.parse(`${date}T00:00:00Z`);
@@ -69,7 +71,8 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
   };
   const eggsSet = (db.incubator_records || []).filter(record => inLastSevenDays(record.dateBrought)).reduce((sum, record) => sum + (Number(record.eggsCollected) || 0), 0);
   const chicksHatched = (db.incubator_records || []).filter(record => record.chicksHatched != null && inLastSevenDays(record.dateBrought)).reduce((sum, record) => sum + (Number(record.chicksHatched) || 0), 0);
-  const revenue = (db.poultry_sales || []).filter(record => inLastSevenDays(record.date)).reduce((sum, record) => sum + (Number(record.totalAmount) || 0), 0)
+  const revenue = (db.poultry_sales || []).filter(record => !record.voided && inLastSevenDays(record.date)).reduce((sum, record) => sum + (Number(record.totalAmount) || 0), 0)
+    + (db.rabbit_sales || []).filter(record => !record.voided && inLastSevenDays(record.date)).reduce((sum, record) => sum + (Number(record.totalAmount) || 0), 0)
     + (db.incubator_records || []).filter(record => inLastSevenDays(record.dateBrought)).reduce((sum, record) => sum + (Number(record.amountPaid) || 0), 0);
   const expenses = (db.expenses || []).filter(record => inLastSevenDays(record.date)).reduce((sum, record) => sum + (Number(record.amount) || 0), 0)
     + (db.feed_records || []).filter(record => inLastSevenDays(record.date)).reduce((sum, record) => sum + (Number(record.totalCost) || 0), 0);
@@ -90,6 +93,8 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     { label: 'Add an egg batch', help: 'Start incubation for a client', icon: Plus, tab: 'incubator' as ActiveTab, key: 'batch' },
   ];
   const moreActions = [
+    { label: 'Add rabbit', icon: Rabbit, key: 'rabbits' },
+    { label: 'Add quail', icon: Egg, key: 'quail_flock_add' },
     { label: 'Transfer birds', icon: ArrowRightLeft, key: 'transfer' },
     { label: 'Feed', icon: Package, key: 'feed' },
     { label: 'Expenses', icon: Receipt, key: 'expense' },

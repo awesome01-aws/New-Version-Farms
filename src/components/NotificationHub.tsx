@@ -45,7 +45,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     // 1. Check 6:00 PM Daily Egg Collection Alert
     const now = new Date();
     const currentHour = now.getHours();
-    const hasEggRecordToday = (db.daily_egg_collections || []).some((rec) => rec.date === todayStr);
+    const hasEggRecordToday = (db.daily_egg_collections || []).some((rec) => rec.date === todayStr && rec.poultryRecorded !== false);
 
     if (currentHour >= 18 && !hasEggRecordToday) {
       list.push({
@@ -60,6 +60,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     if (!db.incubator_records) return list;
 
     db.incubator_records.forEach((rec) => {
+      if (rec.ownerType === 'farm') return;
       const broughtTime = new Date(rec.dateBrought).getTime();
       const daysDiff = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
       const species = rec.eggType || 'Brahma';
@@ -366,4 +367,3 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     </div>
   );
 }
-

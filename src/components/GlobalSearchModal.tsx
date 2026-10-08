@@ -13,7 +13,7 @@ import {
   Sparkles,
   Command
 } from 'lucide-react';
-import { ActiveTab, Client, IncubatorRecord, PoultrySale, Expense, Flock, FeedRecord } from '../types';
+import { ActiveTab, Client, IncubatorRecord, PoultrySale, Expense, Flock, FeedRecord, RabbitAnimal, RabbitSale } from '../types';
 import { formatDateDDMMYYYY, formatFlockAge } from '../utils/dateUtils';
 
 interface GlobalSearchModalProps {
@@ -29,17 +29,20 @@ interface GlobalSearchModalProps {
     flocks?: Flock[];
     feedRecords?: FeedRecord[];
     feed_records?: FeedRecord[];
+    rabbits?: RabbitAnimal[];
+    rabbit_sales?: RabbitSale[];
   };
   setActiveTab: (tab: ActiveTab) => void;
+  onOpenFarmSection?: (section: 'rabbits' | 'quail') => void;
   onOpenEditRecord?: (record: IncubatorRecord) => void;
   onOpenClient?: (client: Client) => void;
 }
 
-type CategoryType = 'all' | 'batches' | 'clients' | 'sales' | 'expenses' | 'flocks';
+type CategoryType = 'all' | 'batches' | 'clients' | 'sales' | 'expenses' | 'flocks' | 'rabbits' | 'quail';
 
 interface SearchResultItem {
   id: string;
-  category: 'batch' | 'client' | 'sale' | 'expense' | 'flock';
+  category: 'batch' | 'client' | 'sale' | 'expense' | 'flock' | 'rabbit';
   title: string;
   subtitle: string;
   badge: string;
@@ -56,7 +59,8 @@ export default function GlobalSearchModal({
   db,
   setActiveTab,
   onOpenEditRecord,
-  onOpenClient
+  onOpenClient,
+  onOpenFarmSection
 }: GlobalSearchModalProps) {
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryType>('all');
@@ -238,8 +242,8 @@ export default function GlobalSearchModal({
     }
 
     // 5. Flocks
-    if (selectedCategory === 'all' || selectedCategory === 'flocks') {
-      (db.flocks || []).forEach((f) => {
+    if (selectedCategory === 'all' || selectedCategory === 'flocks' || selectedCategory === 'quail') {
+      (db.flocks || []).filter(f => selectedCategory !== 'quail' || f.species === 'Quail' || f.breed?.toLowerCase().includes('quail')).forEach((f) => {
         const matchStr = `${f.name} ${f.breed} ${f.species || ''} ${f.quantity} ${f.notes || ''}`.toLowerCase();
         if (matchStr.includes(q)) {
           results.push({
@@ -253,11 +257,19 @@ export default function GlobalSearchModal({
             amount: `${f.quantity} birds`,
             score: 800,
             onClick: () => {
-              setActiveTab('farm');
+              if (f.species === 'Quail' || f.breed?.toLowerCase().includes('quail')) onOpenFarmSection?.('quail');
+              else setActiveTab('farm');
               onClose();
             }
           });
         }
+      });
+    }
+
+    if (selectedCategory === 'all' || selectedCategory === 'rabbits') {
+      (db.rabbits || []).filter(animal => !animal.grouped).forEach(animal => {
+        const match = `${animal.id} ${animal.name || ''} ${animal.tag || ''} ${animal.breed || ''} ${animal.motherId || ''} ${animal.fatherId || ''}`.toLowerCase();
+        if (match.includes(q)) results.push({ id: `rabbit-${animal.id}`, category: 'rabbit', title: animal.name || `Bunny ${animal.id}`, subtitle: `${animal.status} · ${animal.sex} · ${animal.litterId ? `Litter ${animal.litterId}` : 'Individual'}`, badge: 'Rabbit', badgeColor: 'bg-emerald-100 text-emerald-900 border-emerald-200', score: 850, onClick: () => { onOpenFarmSection?.('rabbits'); onClose(); } });
       });
     }
 
@@ -311,6 +323,8 @@ export default function GlobalSearchModal({
             { id: 'sales', label: 'Sales' },
             { id: 'expenses', label: 'Expenses' },
             { id: 'flocks', label: 'Flocks' },
+            { id: 'rabbits', label: 'Rabbits' },
+            { id: 'quail', label: 'Quail' },
           ].map((cat) => (
             <button
               key={cat.id}
@@ -369,10 +383,10 @@ export default function GlobalSearchModal({
             </div>
           ) : (
             results.map((item) => (
-              <div
+              <button type="button"
                 key={item.id}
                 onClick={item.onClick}
-                className="group p-3.5 rounded-2xl border border-slate-100 hover:border-emerald-300 bg-white hover:bg-emerald-50/40 transition-all flex items-center justify-between gap-3 cursor-pointer"
+                className="group w-full p-3.5 rounded-2xl border border-slate-100 hover:border-emerald-300 bg-white hover:bg-emerald-50/40 transition-all flex items-center justify-between gap-3 cursor-pointer text-left"
               >
                 <div className="space-y-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -394,7 +408,7 @@ export default function GlobalSearchModal({
                   )}
                   <ChevronRight size={18} className="text-slate-300 group-hover:text-emerald-600 transition-colors" />
                 </div>
-              </div>
+              </button>
             ))
           )}
         </div>

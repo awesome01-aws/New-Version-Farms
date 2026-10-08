@@ -11,7 +11,8 @@ import {
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
+import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, DbSchema } from '../types';
+import { quailEggBalance } from '../lib/farmActions';
 import { getCameroonTodayISO, formatDateDDMMYYYY, formatDateShortDDMM, formatFlockAge } from '../utils/dateUtils';
 
 export type PdfPeriod = '1_week' | '2_weeks' | '1_month' | '6_months' | '1_year' | 'all_time';
@@ -50,7 +51,7 @@ function filterByPdfPeriod(dateStr: string, period: PdfPeriod): boolean {
 }
 
 export function generatePdfReport(
-  db: {
+  db: Partial<DbSchema> & {
     clients: Client[];
     incubator_records: IncubatorRecord[];
     flocks: Flock[];
@@ -68,14 +69,15 @@ export function generatePdfReport(
 
   // Filter datasets by period
   const incubatorRecs = db.incubator_records.filter(r => filterByPdfPeriod(r.dateBrought, period));
-  const poultrySales = db.poultry_sales.filter(s => filterByPdfPeriod(s.date, period));
+  const poultrySales = db.poultry_sales.filter(s => !s.voided && filterByPdfPeriod(s.date, period));
+  const rabbitSales = (db.rabbit_sales || []).filter(s => !s.voided && filterByPdfPeriod(s.date, period));
   const feedRecs = db.feed_records.filter(f => filterByPdfPeriod(f.date, period));
   const expenseRecs = db.expenses.filter(e => filterByPdfPeriod(e.date, period));
-  const mortalityRecs = db.mortality.filter(m => filterByPdfPeriod(m.date, period));
+  const mortalityRecs = db.mortality.filter(m => !m.voided && filterByPdfPeriod(m.date, period));
   const flocks = db.flocks; // Current flock stock
 
   // Calculate Key Summary Metrics
-  const totalSalesRev = poultrySales.reduce((acc, s) => acc + (s.totalAmount || 0), 0);
+  const totalSalesRev = poultrySales.reduce((acc, s) => acc + (s.totalAmount || 0), 0) + rabbitSales.reduce((acc, s) => acc + (s.totalAmount || 0), 0);
   const totalIncubatorPaid = incubatorRecs.reduce((acc, r) => acc + (r.amountPaid || 0), 0);
   const totalIncubatorDue = incubatorRecs.reduce((acc, r) => acc + (r.amountDue || 0), 0);
 
@@ -95,6 +97,7 @@ export function generatePdfReport(
   const hatchRate = totalEggsIncubated > 0 ? ((totalChicksHatched / totalEggsIncubated) * 100) : 0;
 
   const totalBirdsInStock = flocks.reduce((acc, f) => acc + (f.quantity || 0), 0);
+  const totalRabbitsInStock = (db.rabbits || []).filter(item => item.status === 'active').length;
   const totalMortality = mortalityRecs.reduce((acc, m) => acc + (m.quantity || 0), 0);
 
   // --- HEADER BANNER ---
@@ -203,7 +206,7 @@ export function generatePdfReport(
   doc.setFontSize(7);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(71, 85, 105);
-  doc.text(`Period Mortality: ${totalMortality} birds`, 17 + (cardWidth + 4) * 2, y + 17);
+  doc.text(`${totalRabbitsInStock} Rabbits | ${totalMortality} bird losses`, 17 + (cardWidth + 4) * 2, y + 17);
 
   y += cardHeight + 8;
 
@@ -347,7 +350,7 @@ export function generatePdfReport(
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(15, 23, 42);
-    doc.text('5. Poultry Sales & Revenue Ledger', 14, y);
+    doc.text('5. Farm Sales & Revenue Ledger', 14, y);
     y += 3;
 
     const salesRows = poultrySales.map(s => [
@@ -357,7 +360,14 @@ export function generatePdfReport(
       s.quantity,
       `${s.unitPrice.toLocaleString()} FCFA`,
       `${s.totalAmount.toLocaleString()} FCFA`
-    ]);
+    ]).concat(rabbitSales.map(s => [
+      formatDateDDMMYYYY(s.date),
+      'Live Rabbit',
+      s.buyerName,
+      s.rabbitIds.length,
+      `${(s.totalAmount / s.rabbitIds.length).toLocaleString()} FCFA`,
+      `${s.totalAmount.toLocaleString()} FCFA`
+    ]));
 
     autoTable(doc, {
       startY: y,
@@ -440,7 +450,7 @@ export function generatePdfReport(
 }
 
 interface ReportsModProps {
-  db: {
+  db: Partial<DbSchema> & {
     clients: Client[];
     incubator_records: IncubatorRecord[];
     flocks: Flock[];
@@ -492,7 +502,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
       const dateStr = d.toISOString().split('T')[0];
       const displayDate = formatDateShortDDMM(d);
 
-      const dayRecords = db.mortality.filter(m => m.date === dateStr);
+      const dayRecords = db.mortality.filter(m => !m.voided && m.date === dateStr);
       const totalQty = dayRecords.reduce((acc, m) => acc + (m.quantity || 0), 0);
       const causes = Array.from(new Set(dayRecords.map(m => m.cause).filter(Boolean))).join(', ');
 
@@ -529,8 +539,9 @@ export default function ReportsMod({ db }: ReportsModProps) {
   // 1. FINANCIAL CALCULATIONS
   // Revenues: Poultry Sales + Incubator deposits cleared
   const salesRev = db.poultry_sales
-    .filter(s => filterByDate(s.date))
-    .reduce((acc, s) => acc + s.totalAmount, 0);
+    .filter(s => !s.voided && filterByDate(s.date))
+    .reduce((acc, s) => acc + s.totalAmount, 0)
+    + (db.rabbit_sales || []).filter(s => !s.voided && filterByDate(s.date)).reduce((acc, s) => acc + s.totalAmount, 0);
 
   const incubatorRev = db.incubator_records
     .filter(r => filterByDate(r.dateBrought))
@@ -698,6 +709,17 @@ export default function ReportsMod({ db }: ReportsModProps) {
           <option value="this_week">Last 7 days</option>
         </select>
       </div>
+
+      <section aria-label="Rabbit and quail overview" className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {[
+          { label: 'Rabbits on farm', value: (db.rabbits || []).filter(item => item.status === 'active').length.toLocaleString() },
+          { label: 'Quail on farm', value: db.flocks.filter(item => item.species === 'Quail' || item.breed?.toLowerCase().includes('quail')).reduce((sum, item) => sum + item.quantity, 0).toLocaleString() },
+          { label: 'Quail eggs available', value: quailEggBalance(db as DbSchema).toLocaleString() },
+          { label: 'Rabbit and quail sales', value: ((db.rabbit_sales || []).filter(item => !item.voided && filterByDate(item.date)).reduce((sum, item) => sum + item.totalAmount, 0) + db.poultry_sales.filter(item => item.species === 'Quail' && !item.voided && filterByDate(item.date)).reduce((sum, item) => sum + item.totalAmount, 0)).toLocaleString() + ' FCFA' },
+          { label: 'Rabbit costs', value: ((db.expenses || []).filter(item => item.species === 'Rabbit' && filterByDate(item.date)).reduce((sum, item) => sum + item.amount, 0) + (db.feed_records || []).filter(item => item.species === 'Rabbit' && filterByDate(item.date)).reduce((sum, item) => sum + item.totalCost, 0)).toLocaleString() + ' FCFA' },
+          { label: 'Quail costs', value: ((db.expenses || []).filter(item => item.species === 'Quail' && filterByDate(item.date)).reduce((sum, item) => sum + item.amount, 0) + (db.feed_records || []).filter(item => item.species === 'Quail' && filterByDate(item.date)).reduce((sum, item) => sum + item.totalCost, 0)).toLocaleString() + ' FCFA' }
+        ].map(item => <div key={item.label} className="rounded-2xl border border-emerald-100 bg-white p-4"><span className="block text-sm text-slate-600">{item.label}</span><strong className="mt-1 block text-xl text-emerald-950">{item.value}</strong></div>)}
+      </section>
 
       {/* DOWNLOAD PDF SUMMARY REPORT CARD */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-teal-950 rounded-3xl p-6 text-white shadow-xl border border-slate-700/60 relative overflow-hidden">
@@ -1034,6 +1056,13 @@ export default function ReportsMod({ db }: ReportsModProps) {
             <span className="text-xs font-black text-slate-800">Bird loss</span>
             <span className="text-[9px] text-slate-400 font-bold uppercase">{db.mortality.length} rows</span>
           </button>
+          {[
+            ['rabbits', db.rabbits || []], ['rabbit_litters', db.rabbit_litters || []],
+            ['rabbit_breedings', db.rabbit_breedings || []], ['rabbit_hutches', db.rabbit_hutches || []],
+            ['rabbit_moves', db.rabbit_moves || []], ['rabbit_losses', db.rabbit_losses || []],
+            ['rabbit_sales', db.rabbit_sales || []], ['animal_care', db.animal_care || []],
+            ['quail_egg_use', db.quail_egg_use || []], ['daily_egg_collections', db.daily_egg_collections || []]
+          ].map(([name, rows]) => <button key={name as string} type="button" onClick={() => handleDownloadCSV(name as string, rows as any[])} className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1"><FileSpreadsheet size={20} className="text-teal-600" /><span className="text-xs font-bold text-slate-800">{(name as string).replaceAll('_', ' ')}</span><span className="text-xs text-slate-500">{(rows as any[]).length} rows</span></button>)}
         </div>
 
         <p className="mt-5 text-sm text-slate-600">Choose a record type to save its CSV file to this device.</p>

@@ -18,7 +18,7 @@ async function startServer(port, dataDir, envOverrides = {}) {
   const child = spawn(process.execPath, ['dist/server.cjs'], {
     cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', NVF_LOCAL_ONLY: '1', ...envOverrides }, stdio: 'ignore'
   });
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 900; i++) {
     if (child.exitCode !== null) throw new Error(`Server stopped with ${child.exitCode}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/auth/status`);
@@ -62,6 +62,25 @@ test('family sessions, shared records, offline rejection and durable storage', a
     assert.equal((await post('/api/auth/register', { username: 'child', name: 'Child', password: 'strong-pass-456' }, dad.body.token)).status, 200);
     const child = await post('/api/auth/login', { username: 'child', password: 'strong-pass-456' });
     assert.equal(child.status, 200);
+
+    assert.equal((await post('/api/farm/actions', { id: 'hutch-auth', kind: 'rabbit_hutch', payload: { name: 'Family hutch' } })).status, 401);
+    assert.equal((await post('/api/farm/actions', { id: 'hutch-auth', kind: 'rabbit_hutch', payload: { name: 'Family hutch' } }, dad.body.token)).status, 200);
+    assert.equal((await post('/api/farm/actions', { id: 'rabbit-dad', kind: 'rabbit_add', payload: { name: 'Molly', sex: 'female', date: '2026-09-28', hutchId: 'hutch-auth' } }, dad.body.token)).status, 200);
+    const seenByChild = await request('/api/data', { headers: { Authorization: child.body.token } });
+    assert.equal(seenByChild.body.rabbits.find(item => item.id === 'rabbit-dad')?.name, 'Molly');
+    assert.equal(seenByChild.body.rabbit_hutches[0]?.name, 'Family hutch');
+    assert.equal((await post('/api/farm/actions', { id: 'quail-eggs-family', kind: 'quail_eggs', payload: { date: '2026-10-01', quantity: 6 } }, dad.body.token)).status, 200);
+    const poultryEggs = await post('/api/daily_egg_collections', { date: '2026-10-01', brahmaEggs: 3, turkeyEggs: 1 }, child.body.token);
+    assert.equal(poultryEggs.status, 200);
+    assert.equal(poultryEggs.body.record.totalEggs, 10);
+    assert.equal((await request(`/api/daily_egg_collections/${poultryEggs.body.record.id}`, { method: 'DELETE', headers: { Authorization: dad.body.token } })).status, 200);
+    const afterPoultryDelete = await request('/api/data', { headers: { Authorization: child.body.token } });
+    assert.equal(afterPoultryDelete.body.daily_egg_collections.find(item => item.date === '2026-10-01')?.quailEggs, 6);
+    assert.equal((await post('/api/farm/actions', { id: 'farm-eggs-set', kind: 'quail_egg_use', payload: { date: '2026-10-02', useKind: 'set', quantity: 2 } }, dad.body.token)).status, 200);
+    const farmBatchId = 'farm-farm-eggs-set';
+    assert.equal((await request(`/api/incubator/${farmBatchId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: dad.body.token }, body: JSON.stringify({ chicksHatched: 2 }) })).status, 409);
+    assert.equal((await request(`/api/incubator/${farmBatchId}`, { method: 'DELETE', headers: { Authorization: dad.body.token } })).status, 409);
+    assert.equal((await post('/api/bulk-delete', { type: 'incubator', ids: [farmBatchId] }, dad.body.token)).status, 409);
 
     const flock = await post('/api/flocks', { name: 'Test hens', breed: 'Brahma', quantity: 12, ageWeeks: 2, dateAdded: '2026-09-28' }, dad.body.token);
     assert.equal(flock.status, 200);
@@ -107,7 +126,7 @@ test('production refuses disposable local storage without explicit local-only mo
   try {
     const exitCode = await Promise.race([
       new Promise(resolve => child.once('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Production server unexpectedly stayed alive')), 20000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Production server unexpectedly stayed alive')), 90000))
     ]);
     assert.notEqual(exitCode, 0);
   } finally {

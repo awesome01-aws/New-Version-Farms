@@ -30,6 +30,8 @@ export interface Client {
 
 export interface IncubatorRecord {
   id: string;
+  ownerType?: 'client' | 'farm'; // older records belong to clients
+  flockTransferId?: string; // farm hatch added to quail stock exactly once
   clientId: string;
   clientName: string;
   clientMark: string;
@@ -88,9 +90,10 @@ export interface FeedRecord {
   costBag: number; // FCFA
   totalCost: number; // auto-calculated
   stockRemaining: number;
+  species?: 'Rabbit' | 'Quail' | 'Poultry';
 }
 
-export type PoultryItemType = 'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed';
+export type PoultryItemType = 'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed' | 'Quail' | 'Quail Chick' | 'Quail Egg';
 
 export interface PoultrySale {
   id: string;
@@ -103,6 +106,8 @@ export interface PoultrySale {
   flockId?: string;
   ageWeeks?: number;
   notes?: string;
+  species?: 'Chicken' | 'Turkey' | 'Quail';
+  voided?: boolean;
 }
 
 export interface Mortality {
@@ -112,6 +117,7 @@ export interface Mortality {
   flockName: string;
   quantity: number;
   cause?: string;
+  voided?: boolean;
 }
 
 export type ExpenseCategory = 'Vaccine' | 'Transport' | 'Labor' | 'Electricity' | 'Repair' | 'Other';
@@ -122,6 +128,7 @@ export interface Expense {
   category: ExpenseCategory;
   description: string;
   amount: number; // FCFA
+  species?: 'Rabbit' | 'Quail' | 'Poultry';
 }
 
 export interface CageTransfer {
@@ -167,10 +174,38 @@ export interface DailyEggCollection {
   date: string; // YYYY-MM-DD
   brahmaEggs: number;
   turkeyEggs: number;
+  quailEggs?: number;
+  poultryRecorded?: boolean;
   totalEggs: number; // brahmaEggs + turkeyEggs
   recordedBy?: string;
   notes?: string;
 }
+
+export interface RabbitAnimal {
+  id: string;
+  name?: string;
+  tag?: string;
+  sex: 'female' | 'male' | 'unknown';
+  breed?: string;
+  birthDate?: string;
+  acquiredDate?: string;
+  litterId?: string;
+  motherId?: string;
+  fatherId?: string;
+  hutchId?: string;
+  grouped: boolean;
+  status: 'active' | 'sold' | 'deceased';
+  notes?: string;
+}
+
+export interface RabbitHutch { id: string; name: string; notes?: string }
+export interface RabbitBreeding { id: string; date: string; doeId: string; buckId: string; expectedDate?: string; notes?: string }
+export interface RabbitLitter { id: string; birthDate: string; doeId: string; buckId: string; breedingId?: string; kitIds: string[]; notes?: string }
+export interface RabbitMove { id: string; date: string; rabbitIds: string[]; fromHutchId?: string; toHutchId: string; notes?: string }
+export interface RabbitLoss { id: string; date: string; rabbitIds: string[]; cause?: string; voided?: boolean }
+export interface RabbitSale { id: string; date: string; rabbitIds: string[]; buyerName: string; totalAmount: number; voided?: boolean }
+export interface AnimalCareRecord { id: string; date: string; species: 'Rabbit' | 'Quail'; targetId: string; kind: 'health' | 'weight' | 'feed'; detail?: string; amount?: number; unit?: 'kg' | 'g' | 'FCFA'; notes?: string }
+export interface QuailEggUse { id: string; date: string; kind: 'sold' | 'eaten' | 'set' | 'adjustment'; quantity: number; buyerName?: string; amount?: number; incubatorId?: string; saleId?: string; notes?: string; voided?: boolean }
 
 export interface FowlEatenRecord {
   id: string;
@@ -198,6 +233,16 @@ export interface DbSchema {
   cage_allocations?: CageAllocation[];
   daily_egg_collections?: DailyEggCollection[];
   fowls_eaten?: FowlEatenRecord[];
+  rabbits?: RabbitAnimal[];
+  rabbit_hutches?: RabbitHutch[];
+  rabbit_breedings?: RabbitBreeding[];
+  rabbit_litters?: RabbitLitter[];
+  rabbit_moves?: RabbitMove[];
+  rabbit_losses?: RabbitLoss[];
+  rabbit_sales?: RabbitSale[];
+  animal_care?: AnimalCareRecord[];
+  quail_egg_use?: QuailEggUse[];
+  farm_action_receipts?: string[];
 }
 
 export type ActiveTab = 'home' | 'farm' | 'incubator' | 'reports';

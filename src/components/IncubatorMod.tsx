@@ -3396,10 +3396,10 @@ export default function IncubatorMod({
                       <input
                         type="checkbox"
                         onClick={(e) => e.stopPropagation()}
-                        checked={sortedRecords.length > 0 && selectedRecordIds.length === sortedRecords.length}
+                        checked={sortedRecords.some(r => r.ownerType !== 'farm') && selectedRecordIds.length === sortedRecords.filter(r => r.ownerType !== 'farm').length}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setSelectedRecordIds(sortedRecords.map(r => r.id));
+                            setSelectedRecordIds(sortedRecords.filter(r => r.ownerType !== 'farm').map(r => r.id));
                           } else {
                             setSelectedRecordIds([]);
                           }
@@ -3478,6 +3478,8 @@ export default function IncubatorMod({
                           <td className="p-1.5 sm:p-3 text-center w-8 sm:w-12">
                             <input
                               type="checkbox"
+                              disabled={rec.ownerType === 'farm'}
+                              title={rec.ownerType === 'farm' ? 'Manage this batch in Farm → Quail' : undefined}
                               onClick={(e) => e.stopPropagation()}
                               checked={isSelected}
                               onChange={(e) => {
@@ -3493,6 +3495,7 @@ export default function IncubatorMod({
                           {/* 1. Client Name */}
                           <td className="p-1.5 sm:p-3 text-slate-900 font-black truncate max-w-[100px] sm:max-w-[150px]" title={rec.clientName}>
                             <div>{rec.clientName}</div>
+                            {rec.ownerType === 'farm' && <span className="block text-[9px] font-bold text-emerald-700">Farm-owned · manage in Farm → Quail</span>}
                             <span className="inline-block px-1 py-0.2 sm:px-1.5 sm:py-0.5 mt-0.5 rounded text-[8px] sm:text-[9px] font-black uppercase bg-slate-100 text-slate-700">
                               {rec.eggType || 'Brahma'}
                             </span>
@@ -3628,24 +3631,24 @@ export default function IncubatorMod({
                           
                           {/* 13. Client Phone WhatsApp */}
                           <td className="p-1.5 sm:p-3 text-center">
-                            <button
+                            {rec.ownerType === 'farm' ? <span className="text-[10px] text-slate-500">Farm batch</span> : <button
                               onClick={() => openWhatsApp(rec.clientPhone, `Hello ${rec.clientName}, update on egg batch brought of date ${formatDateDDMMYYYY(rec.dateBrought)}: Day 21 status.`)}
                               className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-100 text-emerald-700 px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-lg text-[10px] sm:text-xs hover:bg-emerald-100 transition-all cursor-pointer"
                             >
                               <MessageSquare size={11} />
                               <span>Click WA</span>
-                            </button>
+                            </button>}
                           </td>
                           
                           {/* 14. Edit Record button */}
                           <td className="p-1.5 sm:p-3 text-center">
-                            <button
+                            {rec.ownerType === 'farm' ? <span className="text-[10px] text-emerald-700">Use Farm → Quail</span> : <button
                               onClick={() => setSelectedEditRecord(rec)}
                               className="p-1 sm:p-2 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-100 text-slate-500 rounded-lg cursor-pointer transition-colors"
                               title="Update incubator status values"
                             >
                               <FileEdit size={12} className="sm:w-[14px] sm:h-[14px]" />
-                            </button>
+                            </button>}
                           </td>
                         </tr>
                       );

@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense } from '../types';
+import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, RabbitAnimal, RabbitHutch, RabbitBreeding, RabbitLitter, RabbitMove, RabbitLoss, RabbitSale, AnimalCareRecord, QuailEggUse } from '../types';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { apiUrl } from './apiOrigin';
+import { applyFarmAction } from './farmActions';
 
 export interface DbData {
   users?: any[];
@@ -16,6 +17,15 @@ export interface DbData {
   poultry_sales: PoultrySale[];
   mortality: Mortality[];
   expenses: Expense[];
+  rabbits?: RabbitAnimal[];
+  rabbit_hutches?: RabbitHutch[];
+  rabbit_breedings?: RabbitBreeding[];
+  rabbit_litters?: RabbitLitter[];
+  rabbit_moves?: RabbitMove[];
+  rabbit_losses?: RabbitLoss[];
+  rabbit_sales?: RabbitSale[];
+  animal_care?: AnimalCareRecord[];
+  quail_egg_use?: QuailEggUse[];
 }
 
 export interface QueuedMutation {
@@ -186,7 +196,10 @@ export function executeLocalMutation(
 
   try {
     // --- FLOCKS ---
-    if (endpoint === '/api/flocks' && method === 'POST') {
+    if (endpoint === '/api/farm/actions' && method === 'POST') {
+      responseData = { success: true, result: applyFarmAction(db as any, body) };
+      description = `Farm: ${body.kind}`;
+    } else if (endpoint === '/api/flocks' && method === 'POST') {
       const flockId = body.id || crypto.randomUUID();
       const newFlock: Flock = {
         id: flockId,
@@ -232,6 +245,7 @@ export function executeLocalMutation(
         id: feedId,
         date: String(body.date || getCameroonTodayISO()),
         feedType: String(body.feedType || '').trim(),
+        species: body.species === 'Rabbit' || body.species === 'Quail' ? body.species : 'Poultry',
         bagsBought,
         weightPerBag: Number(body.weightPerBag || 50),
         costBag,
@@ -643,7 +657,7 @@ export function executeLocalMutation(
     return { responseData, offlineQueued: true };
   } catch (err) {
     console.error('Error executing local offline mutation:', err);
-    return { responseData: { success: false, error: 'Local offline store error' }, offlineQueued: false };
+    return { responseData: { success: false, error: err instanceof Error ? err.message : 'Local offline store error' }, offlineQueued: false };
   }
 }
 
