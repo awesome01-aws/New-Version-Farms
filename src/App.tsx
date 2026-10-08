@@ -277,6 +277,7 @@ export default function App() {
             currentUserName={currentUser?.name}
             setActiveTab={setActiveTab}
             onTriggerQuickForm={handleTriggerQuickForm}
+            onOpenEditRecord={handleOpenEditRecord}
           />
         )}
 

@@ -3002,7 +3002,7 @@ export default function IncubatorMod({
             )}
           </div>
 
-          {totalBatchesCount === 0 ? <div className="rounded-2xl border border-emerald-100 bg-white p-6 text-center"><Egg size={30} className="text-emerald-700 mx-auto"/><h3 className="text-lg font-bold mt-3">No egg batches yet</h3><p className="text-sm text-slate-600 mt-1">Add the first batch to start tracking incubation.</p><button type="button" onClick={() => setShowBatchForm(true)} className="mt-4 min-h-11 px-5 rounded-xl bg-emerald-700 text-white font-bold">Add egg batch</button></div> : <>
+          {totalBatchesCount === 0 && <div className="rounded-2xl border border-emerald-100 bg-white p-6 text-center"><Egg size={30} className="text-emerald-700 mx-auto"/><h3 className="text-lg font-bold mt-3">No egg batches yet</h3><p className="text-sm text-slate-600 mt-1">Add the first batch to start tracking incubation.</p><button type="button" onClick={() => setShowBatchForm(true)} className="mt-4 min-h-11 px-5 rounded-xl bg-emerald-700 text-white font-bold">Add egg batch</button></div>}
           {/* Table Management Dashboard */}
           <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-xs">
             
@@ -3657,7 +3657,7 @@ export default function IncubatorMod({
           </div>
 
           {/* WEEKLY TOTALS SUMMARY TABLE (Mon-Sun calculated from incubator batch inputs) */}
-          <div hidden={!showAdvancedRecords} className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-4 text-left">
+          <div className="mt-8 bg-white rounded-3xl p-5 sm:p-6 border border-slate-100 shadow-xs space-y-4 text-left">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <div className="flex items-center gap-2">
@@ -3907,8 +3907,7 @@ export default function IncubatorMod({
           </div>
 
           {/* Real-time Hatching Percentage Circular Analytics Feature */}
-          {showAdvancedRecords && <HatchingAnalyticsSection records={data.incubator_records} />}
-          </>}
+          <HatchingAnalyticsSection records={data.incubator_records} />
         </div>
       )}
 
