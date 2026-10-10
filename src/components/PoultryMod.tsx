@@ -9,7 +9,9 @@ import {
   Receipt, Utensils, UtensilsCrossed, Skull, TrendingDown, Sparkles, LayoutGrid
 } from 'lucide-react';
 import { Flock, FeedRecord, PoultrySale, Mortality, Expense, ActiveTab, CageTransfer, CageLocation, CageAllocation, DailyEggCollection, FowlEatenRecord, DbSchema, IncubatorRecord } from '../types';
-import { RabbitSection, QuailSection } from './FarmAnimalsMod';
+import { RabbitSection, QuailSection, useFarmAction } from './FarmAnimalsMod';
+import { SharedAnimalHousing } from './SharedAnimalHousing';
+import { farmRecordViews, rabbitChoices, selectedRabbitIds } from '../lib/farmViews';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 import { useFormAutoSave, DraftSavedBadge } from '../lib/useFormAutoSave';
 import { getCameroonTodayISO, formatDateDDMMYYYY, parseDateToISO, calculateCurrentAgeWeeks, formatFlockAge, formatAgeDisplay, calculateFlockAge, parseNumericAgeWeeks } from '../utils/dateUtils';
@@ -187,12 +189,27 @@ function SearchableCageSelect({
 }
 
 export default function PoultryMod({
-  data,
+  data: rawData,
   triggerRefresh,
   quickFormKey,
   setQuickFormKey,
   token
 }: PoultryModProps) {
+  const data = { ...rawData, ...farmRecordViews(rawData) };
+  const farmAction = useFarmAction(token, triggerRefresh);
+  const [housingRequest, setHousingRequest] = useState({ version: 0, animalType: 'Rabbit', task: 'create' });
+  const openAnimalHousing = (species: string) => { setHousingRequest(prev => ({ version: prev.version + 1, animalType: species, task: 'assign' })); setTimeout(() => document.getElementById('section_animal_housing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); };
+  const sharedRabbitChoices = rabbitChoices(rawData);
+  const isQuailFlock = (id: string) => rawData.flocks.some(f => f.id === id && `${f.species || ''} ${f.breed || ''}`.toLowerCase().includes('quail'));
+  const reverseFarmRecord = async (endpoint: string, id: string) => {
+    if (endpoint === '/api/sales') {
+      const row = data.poultry_sales.find(item => item.id === id);
+      if (row?.stockAction) return farmAction.run(row.stockAction, row.stockAction === 'quail_egg_use_void' ? { useId: rawData.quail_egg_use?.find(use => use.saleId === id)?.id } : { saleId: id });
+    }
+    if (endpoint === '/api/mortality' && data.mortality.find(item => item.id === id)?.stockAction) return farmAction.run(data.mortality.find(item => item.id === id)!.stockAction!, { lossId: id });
+    if (endpoint === '/api/fowls-eaten' && data.fowls_eaten.find(item => item.id === id)?.stockAction) return farmAction.run(data.fowls_eaten.find(item => item.id === id)!.stockAction!, { recordId: id });
+    return undefined;
+  };
   const [, setNowTick] = useState<number>(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 30000);
@@ -604,10 +621,11 @@ export default function PoultryMod({
       if (f.quantity <= 0) return;
 
       const normName = f.name.trim().toLowerCase();
+      const savedAllocation = (data.cage_allocations || []).find(a => a.id === `flock-${f.id}` || a.flockName === f.name);
       const rawNotes = (f.notes || '').trim();
-      const cleanCageName = rawNotes.replace(/\s*\(.*\)/g, '').trim() || 'UNASSIGNED CAGE';
+      const cleanCageName = savedAllocation?.cageName || rawNotes.replace(/\s*\(.*\)/g, '').trim() || 'UNASSIGNED CAGE';
       const matchedCage = allFarmCages.find(c => c.cageName.toUpperCase() === cleanCageName.toUpperCase());
-      const blockName = matchedCage ? matchedCage.blockName : 'BLOCK 0';
+      const blockName = savedAllocation?.blockName || (matchedCage ? matchedCage.blockName : 'BLOCK 0');
       const computedAge = calculateCurrentAgeWeeks(f.dateAdded, f.initialAgeWeeks ?? 0);
 
       list.push({
@@ -630,6 +648,12 @@ export default function PoultryMod({
       seenFlockNames.add(normName);
     });
 
+    for (const hutch of data.rabbit_hutches || []) {
+      const occupants = (data.rabbits || []).filter(r => r.status === 'active' && r.hutchId === hutch.id);
+      if (!occupants.length) continue;
+      const cage = allFarmCages.find(c => c.id === hutch.cageId || c.id === hutch.id);
+      list.push({ id: `rabbit-housing-${hutch.id}`, blockName: cage?.blockName || 'Rabbits', cageName: cage?.cageName || hutch.name, flockName: occupants.map(r => r.grouped ? 'Grouped bunny' : r.name || r.id).join(', '), species: 'Rabbit', quantity: occupants.length, ageWeeks: 0, dateAdded: occupants[0].birthDate || occupants[0].acquiredDate || getCameroonTodayISO(), dateTransferred: getCameroonTodayISO(), notes: 'Live rabbit housing; assign or move using the rabbit housing controls.' });
+    }
     (data.cage_allocations || []).forEach(a => {
       // Deduplicate manual cage allocations if flockName is already represented by an active flock
       const normName = (a.flockName || '').trim().toLowerCase();
@@ -641,7 +665,7 @@ export default function PoultryMod({
     });
 
     return list;
-  }, [data.flocks, data.cage_allocations, allFarmCages]);
+  }, [data.flocks, data.cage_allocations, data.rabbits, data.rabbit_hutches, allFarmCages]);
 
   // Map of cage name (uppercase) -> array of allocations in that cage for multi-batch detection
   const cageOccupancyMap = React.useMemo(() => {
@@ -1008,7 +1032,7 @@ export default function PoultryMod({
 
   // Sales
   const [saleDate, setSaleDate] = useState(getCameroonTodayISO());
-  const [saleItem, setSaleItem] = useState<'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed'>('Fowl');
+  const [saleItem, setSaleItem] = useState<PoultrySale['itemType']>('Fowl');
   const [saleQty, setSaleQty] = useState('');
   const [salePrice, setSalePrice] = useState('');
   const [saleBuyer, setSaleBuyer] = useState('');
@@ -1652,7 +1676,7 @@ export default function PoultryMod({
     setFeedRemaining('');
   };
 
-  const handleAddSale = (e: React.FormEvent) => {
+  const handleAddSale = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!saleQty || !salePrice || !saleBuyer) {
       setErrorMsg('Please supply buyer details and numbers.');
@@ -1670,7 +1694,16 @@ export default function PoultryMod({
       setErrorMsg('Age in weeks cannot be negative.');
       return;
     }
-    submitRecord('/api/sales', {
+    if (saleItem === 'Rabbit' || saleItem.startsWith('Quail')) {
+      try {
+        const amount = Number(saleQty) * Number(salePrice);
+        const kind = saleItem === 'Rabbit' ? 'rabbit_sale' : saleItem === 'Quail Egg' ? 'quail_egg_use' : 'quail_live_sale';
+        const payload = saleItem === 'Rabbit'
+          ? { date: saleDate, rabbitIds: selectedRabbitIds(rawData, saleFlockId, Number(saleQty)), buyerName: saleBuyer, totalAmount: amount }
+          : { date: saleDate, flockId: saleFlockId, quantity: Number(saleQty), amount, buyerName: saleBuyer, isChick: saleItem === 'Quail Chick', useKind: 'sold', notes: saleNotes };
+        if (!await farmAction.run(kind, payload)) return;
+      } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Choose available stock.'); return; }
+    } else submitRecord('/api/sales', {
       date: saleDate,
       itemType: saleItem,
       quantity: Number(saleQty),
@@ -1689,7 +1722,7 @@ export default function PoultryMod({
     setSaleNotes('');
   };
 
-  const handleAddMortality = (e: React.FormEvent) => {
+  const handleAddMortality = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!mortFlockId || !mortQty) {
       setErrorMsg('Select flock and count of casualties.');
@@ -1699,7 +1732,12 @@ export default function PoultryMod({
       setErrorMsg('Mortality casualty count must be a positive number.');
       return;
     }
-    submitRecord('/api/mortality', {
+    if (mortFlockId.startsWith('rabbit:') || mortFlockId.startsWith('litter:') || isQuailFlock(mortFlockId)) {
+      try {
+        const rabbit = !isQuailFlock(mortFlockId);
+        if (!await farmAction.run(rabbit ? 'rabbit_loss' : 'quail_loss', { date: mortDate, ...(rabbit ? { rabbitIds: selectedRabbitIds(rawData, mortFlockId, Number(mortQty)) } : { flockId: mortFlockId, quantity: Number(mortQty) }), cause: mortCause })) return;
+      } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Choose available stock.'); return; }
+    } else submitRecord('/api/mortality', {
       date: mortDate,
       flockId: mortFlockId,
       quantity: Number(mortQty),
@@ -1732,7 +1770,7 @@ export default function PoultryMod({
     setExpAmount('');
   };
 
-  const handleAddFowlEaten = (e: React.FormEvent) => {
+  const handleAddFowlEaten = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!eatenFlockId || !eatenQty) {
       setErrorMsg('Please select a flock batch and enter quantity eaten.');
@@ -1742,6 +1780,15 @@ export default function PoultryMod({
     if (isNaN(qtyNum) || qtyNum <= 0) {
       setErrorMsg('Quantity eaten must be a valid positive number.');
       return;
+    }
+
+    if (eatenFlockId.startsWith('rabbit:') || eatenFlockId.startsWith('litter:') || isQuailFlock(eatenFlockId)) {
+      try {
+        const rabbit = !isQuailFlock(eatenFlockId);
+        if (!await farmAction.run(rabbit ? 'rabbit_eaten' : 'quail_eaten', { date: eatenDate, ...(rabbit ? { rabbitIds: selectedRabbitIds(rawData, eatenFlockId, qtyNum) } : { flockId: eatenFlockId, quantity: qtyNum }), notes: eatenNotes })) return;
+        clearEatenDraft(); setEatenFlockId(''); setEatenQty(''); setEatenNotes(''); setEatenAgeWeeks('');
+        return;
+      } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Choose available stock.'); return; }
     }
 
     const selectedFlock = (data.flocks || []).find(f => f.id === eatenFlockId);
@@ -1777,12 +1824,18 @@ export default function PoultryMod({
 
   // Deletion helper
   const handleDeleteRow = (endpoint: string, id: string, name?: string) => {
+    const linked = endpoint === '/api/sales' ? data.poultry_sales.find(r => r.id === id)?.stockAction : endpoint === '/api/mortality' ? data.mortality.find(r => r.id === id)?.stockAction : endpoint === '/api/fowls-eaten' ? data.fowls_eaten.find(r => r.id === id)?.stockAction : undefined;
     confirmDelete(
-      'Delete Record Permanently',
-      `Are you sure you want to delete ${name ? `'${name}'` : 'this record'}? This action cannot be undone.`,
+      linked ? 'Reverse entry and restore stock' : 'Delete Record Permanently',
+      linked ? 'Reverse this entry? The animals or eggs will return to available stock and the original entry will remain in history.' : `Are you sure you want to delete ${name ? `'${name}'` : 'this record'}? This action cannot be undone.`,
       async () => {
         setLoading(true);
         try {
+          const reversed = await reverseFarmRecord(endpoint, id);
+          if (reversed !== undefined) {
+            if (reversed) setSuccessMsg('Record reversed and live stock restored.');
+            return;
+          }
           const res = await fetch(`${endpoint}/${id}`, {
             method: 'DELETE',
             headers: { 'Authorization': token }
@@ -1800,7 +1853,7 @@ export default function PoultryMod({
           setLoading(false);
         }
       },
-      'Delete Record'
+      linked ? 'Reverse record' : 'Delete Record'
     );
   };
 
@@ -1823,13 +1876,24 @@ export default function PoultryMod({
         setErrorMsg('');
         setSuccessMsg('');
         try {
+          const sharedEndpoint = type === 'sales' ? '/api/sales' : type === 'mortality' ? '/api/mortality' : type === 'fowls_eaten' ? '/api/fowls-eaten' : '';
+          const ordinaryIds: string[] = [];
+          for (const id of ids) {
+            const reversed = sharedEndpoint ? await reverseFarmRecord(sharedEndpoint, id) : undefined;
+            if (reversed === false) throw new Error('A selected stock record could not be reversed. Earlier successful reversals are saved; refresh and review.');
+            if (reversed === undefined) ordinaryIds.push(id);
+          }
+          if (!ordinaryIds.length) {
+            setSelectedSaleIds([]); setSelectedMortalityIds([]); setSelectedEatenIds([]);
+            setSuccessMsg('Selected records reversed and stock restored.'); triggerRefresh(); return;
+          }
           const res = await fetch('/api/bulk-delete', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': token
             },
-            body: JSON.stringify({ type, ids })
+            body: JSON.stringify({ type, ids: ordinaryIds })
           });
           const resData = await res.json();
           if (res.ok) {
@@ -2058,9 +2122,11 @@ export default function PoultryMod({
       )}
 
       <div className="px-1"><h1 className="text-2xl font-bold tracking-tight text-emerald-950">Farm records</h1><p className="text-sm text-slate-600">Choose what you want to manage today.</p></div>
+      {farmAction.error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-rose-700">{farmAction.error}</p>}
+      {farmAction.message && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-emerald-800">{farmAction.message}</p>}
       <label className="block sm:hidden text-sm font-semibold text-emerald-950">Farm section
         <select aria-label="Farm section" value={farmSubSection} onChange={event => setFarmSubSection(event.target.value as typeof farmSubSection)} className="mt-2 h-13 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-base text-emerald-950">
-          <option value="overview">Overview</option><option value="rabbits">Rabbits</option><option value="quail">Quail</option><option value="flocks">Flocks and cages</option><option value="eggs">Egg collection</option><option value="sales">Sales</option><option value="feed">Feed</option><option value="mortality">Bird loss</option><option value="eaten">Birds eaten</option><option value="expenses">Expenses</option><option value="all">View all records</option>
+          <option value="overview">Overview</option><option value="rabbits">Rabbits</option><option value="quail">Quail</option><option value="flocks">Flocks and cages</option><option value="eggs">Egg collection</option><option value="sales">Sales</option><option value="feed">Feed</option><option value="mortality">Animal loss</option><option value="eaten">Animals used at home</option><option value="expenses">Expenses</option><option value="all">View all records</option>
         </select>
       </label>
       <nav aria-label="Farm sections" className="hidden sm:flex items-center gap-2 p-1.5 bg-emerald-50 rounded-2xl border border-emerald-100 overflow-x-auto select-none touch-pan-x scrollbar-none">
@@ -2074,7 +2140,7 @@ export default function PoultryMod({
           { id: 'sales', label: 'Sales & Revenue', icon: <DollarSign size={14} className="shrink-0" />, count: (data.poultry_sales || []).length },
           { id: 'feed', label: 'Feed Stock', icon: <Package size={14} className="shrink-0" />, count: (data.feed_records || []).length },
           { id: 'mortality', label: 'Mortality', icon: <TrendingDown size={14} className="shrink-0" />, count: (data.mortality || []).length },
-          { id: 'eaten', label: 'Fowls Eaten', icon: <Utensils size={14} className="shrink-0" />, count: (data.fowls_eaten || []).length },
+          { id: 'eaten', label: 'Used at home', icon: <Utensils size={14} className="shrink-0" />, count: (data.fowls_eaten || []).length },
           { id: 'expenses', label: 'Expenses', icon: <Receipt size={14} className="shrink-0" />, count: (data.expenses || []).length },
         ].map((tab) => {
           const isActive = farmSubSection === tab.id;
@@ -2237,11 +2303,12 @@ export default function PoultryMod({
         </div>
       </div>
 
-      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'rabbits'}><RabbitSection key={rabbitShortcutVersion} data={data} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'rabbit_add' ? 'rabbit_add' : undefined} /></div>
-      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'quail'}><QuailSection key={quailShortcutVersion} data={data} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'quail_flock_add' ? 'quail_flock_add' : undefined} /></div>
+      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'rabbits'}><RabbitSection key={rabbitShortcutVersion} data={rawData} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'rabbit_add' ? 'rabbit_add' : undefined} /></div>
+      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'quail'}><QuailSection key={quailShortcutVersion} data={rawData} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'quail_flock_add' ? 'quail_flock_add' : undefined} /></div>
 
       {/* SECTION 1: FLOCKS */}
       <div id="section_flocks" hidden={farmSubSection !== 'all' && farmSubSection !== 'flocks'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+        <SharedAnimalHousing key={housingRequest.version} data={rawData} token={token} refresh={triggerRefresh} initialTask={housingRequest.task} initialAnimalType={housingRequest.animalType} />
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Bird flocks & cages</h3>
@@ -2559,7 +2626,7 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-emerald-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
               {loading ? 'Adding flock...' : 'Save Flock Record'}
@@ -2718,7 +2785,7 @@ export default function PoultryMod({
             <div className="flex gap-2 pt-2">
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || farmAction.busy}
                 className="flex-1 h-12 bg-amber-600 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow-md hover:bg-amber-700 transition-colors active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
               >
                 <ArrowRightLeft size={16} />
@@ -2792,7 +2859,7 @@ export default function PoultryMod({
               <div className="flex items-end">
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="w-full h-11 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow"
                 >
                   <Plus size={15} />
@@ -2991,7 +3058,7 @@ export default function PoultryMod({
                   LIVE CAGE BLOCK DISTRIBUTION
                 </h4>
                 <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase">
-                  {(data.cage_allocations || []).reduce((acc, a) => acc + a.quantity, 0)} Total Fowls
+                  {liveAllocations.reduce((acc, a) => acc + a.quantity, 0)} Animals in cages
                 </span>
               </div>
               <p className="text-slate-400 text-xs font-semibold mt-0.5">
@@ -3318,6 +3385,7 @@ export default function PoultryMod({
                               <button
                                 type="button"
                                 onClick={() => {
+                                  if (a.species === 'Rabbit' || a.species === 'Quail') { openAnimalHousing(a.species); return; }
                                   const matchedFlock = (data.flocks || []).find(fl => fl.id === a.id.replace('flock-', '')) || (data.flocks || []).find(fl => fl.name.toLowerCase() === a.flockName.toLowerCase());
                                   if (matchedFlock) {
                                     setTransferSourceFlockId(matchedFlock.id);
@@ -3342,6 +3410,7 @@ export default function PoultryMod({
                               <button
                                 type="button"
                                 onClick={() => {
+                                  if (a.species === 'Rabbit' || a.species === 'Quail') { openAnimalHousing(a.species); return; }
                                   setEditingAlloc(a);
                                   setEditAllocForm({ ...a });
                                 }}
@@ -3352,7 +3421,7 @@ export default function PoultryMod({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleDeleteAlloc(a.id)}
+                                onClick={() => { if (a.species === 'Rabbit' || a.species === 'Quail') openAnimalHousing(a.species); else handleDeleteAlloc(a.id); }}
                                 className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                                 title="Delete Allocation Row"
                               >
@@ -3872,7 +3941,7 @@ export default function PoultryMod({
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="px-5 py-2 bg-amber-600 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow hover:bg-amber-700 transition-colors cursor-pointer flex items-center gap-1.5"
                 >
                   <Check size={14} />
@@ -4159,7 +4228,7 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-emerald-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
               {loading ? 'Saving...' : 'Save Feed Record'}
@@ -4318,7 +4387,7 @@ export default function PoultryMod({
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-lg font-bold text-slate-900">Sales</h3>
-            <p className="text-slate-400 text-xs font-semibold">Track revenues from sales of Brahma stock & products</p>
+            <p className="text-slate-500 text-xs font-semibold">Sell rabbits, quail, poultry and eggs. Live stock and cage counts update automatically.</p>
           </div>
           <button
             id="toggle_sales_form"
@@ -4359,7 +4428,7 @@ export default function PoultryMod({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Fowl Product / Item</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Animal or product sold</label>
                 <select
                   value={saleItem}
                   onChange={(e) => {
@@ -4377,8 +4446,15 @@ export default function PoultryMod({
                   <option value="Chick">Brahma Chicks (Day Old+)</option>
                   <option value="Turkey">Turkey (Poult / Mature)</option>
                   <option value="Feed">Feed Resale Bags</option>
+                  <option value="Rabbit">Rabbit (Live)</option>
+                  <option value="Quail">Quail (Live)</option>
+                  <option value="Quail Chick">Quail Chicks</option>
+                  <option value="Quail Egg">Quail Eggs</option>
                 </select>
               </div>
+
+              {saleItem === 'Rabbit' && <label className="block text-sm font-semibold text-slate-700">Rabbit or litter<select value={saleFlockId} onChange={e => { setSaleFlockId(e.target.value); setSaleQty('1'); }} required className={largeInputClass}><option value="">Choose live rabbits</option>{sharedRabbitChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</select></label>}
+              {(saleItem === 'Quail' || saleItem === 'Quail Chick') && <label className="block text-sm font-semibold text-slate-700">Quail flock<select value={saleFlockId} onChange={e => setSaleFlockId(e.target.value)} required className={largeInputClass}><option value="">Choose live quail</option>{rawData.flocks.filter(f => isQuailFlock(f.id) && f.quantity > 0).map(f => <option key={f.id} value={f.id}>{f.name} · {f.quantity} alive</option>)}</select></label>}
 
               {/* Conditional Flock Selection and Age in Weeks for Live Birds */}
               {(saleItem === 'Fowl' || saleItem === 'Chick' || saleItem === 'Turkey') && (
@@ -4492,7 +4568,7 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-emerald-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
               {loading ? 'Registering...' : 'Log Safe Sale'}
@@ -4645,6 +4721,7 @@ export default function PoultryMod({
                       <td className="p-3 text-center">
                         <button
                           onClick={() => handleDeleteRow('/api/sales', sal.id)}
+                          title={sal.stockAction ? 'Reverse sale and restore stock' : 'Delete sale'}
                           className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer"
                         >
                           <Trash2 size={16} />
@@ -4688,7 +4765,7 @@ export default function PoultryMod({
                 setMortCause('');
               }}
             />
-            <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Record Bird Death</h4>
+            <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-2">Record Animal Death</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Date</label>
@@ -4702,7 +4779,7 @@ export default function PoultryMod({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Afflicted Farm Flock</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Animal or flock affected</label>
                 <select
                   value={mortFlockId}
                   onChange={(e) => setMortFlockId(e.target.value)}
@@ -4710,6 +4787,7 @@ export default function PoultryMod({
                   required
                 >
                   <option value="">-- Choose Affected Flock --</option>
+                  <optgroup label="Rabbits">{sharedRabbitChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</optgroup>
                   {data.flocks.map(f => (
                     <option key={f.id} value={f.id}>{f.name} ({f.quantity} alive)</option>
                   ))}
@@ -4743,10 +4821,10 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-rose-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-rose-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
-              {loading ? 'Submitting...' : 'Register Dead Fowl'}
+              {loading ? 'Saving…' : 'Save animal loss'}
             </button>
           </form>
         )}
@@ -4875,6 +4953,7 @@ export default function PoultryMod({
                       <td className="p-3 text-center">
                         <button
                           onClick={() => handleDeleteRow('/api/mortality', mor.id)}
+                          title={mor.stockAction ? 'Reverse loss and restore stock' : 'Delete loss'}
                           className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer"
                         >
                           <Trash2 size={16} />
@@ -4894,12 +4973,12 @@ export default function PoultryMod({
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
-              <span>5. Fowls Eaten at Home</span>
+              <span>Animals used at home</span>
               <span className="px-2 py-0.5 text-[10px] bg-amber-50 text-amber-800 border border-amber-200 rounded-full font-bold uppercase">
                 House Consumption
               </span>
             </h3>
-            <p className="text-slate-400 text-xs font-semibold">Track birds consumed by household — automatically updates flock inventory balance</p>
+            <p className="text-slate-500 text-xs font-semibold">Record rabbits, quail or poultry used for food. Live stock updates automatically.</p>
           </div>
           <button
             id="toggle_eaten_form"
@@ -4938,7 +5017,7 @@ export default function PoultryMod({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Flock Name (Source Batch)</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 ml-1">Animal or flock used at home</label>
                 <select
                   value={eatenFlockId}
                   onChange={(e) => setEatenFlockId(e.target.value)}
@@ -4946,6 +5025,7 @@ export default function PoultryMod({
                   required
                 >
                   <option value="">-- Choose Source Flock --</option>
+                  <optgroup label="Rabbits">{sharedRabbitChoices.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}</optgroup>
                   {(data.flocks || []).map(f => (
                     <option key={f.id} value={f.id} disabled={f.quantity <= 0}>
                       {f.name} ({f.species || 'Chicken'} - {f.quantity} alive)
@@ -4994,7 +5074,7 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-amber-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-amber-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
               {loading ? 'Recording...' : 'Register Fowl Eaten'}
@@ -5165,6 +5245,7 @@ export default function PoultryMod({
                         <td className="p-3 text-center">
                           <button
                             onClick={() => handleDeleteRow('/api/fowls-eaten', fe.id)}
+                            title={fe.stockAction ? 'Reverse household use and restore stock' : 'Delete household use'}
                             className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer"
                           >
                             <Trash2 size={16} />
@@ -5264,7 +5345,7 @@ export default function PoultryMod({
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || farmAction.busy}
               className="w-full h-12 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-wider text-sm shadow hover:bg-emerald-700 transition-colors active:scale-[0.98] cursor-pointer"
             >
               {loading ? 'Submitting...' : 'Register Expense Log'}
@@ -5715,7 +5796,7 @@ export default function PoultryMod({
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold uppercase text-xs tracking-wider transition-colors active:scale-[0.98] cursor-pointer shadow-md flex items-center justify-center gap-2"
                 >
                   {loading ? 'Saving...' : 'Save Updates'}
@@ -5868,7 +5949,7 @@ export default function PoultryMod({
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="flex-1 h-11 bg-emerald-600 text-white rounded-xl text-xs font-extrabold uppercase shadow cursor-pointer hover:bg-emerald-700"
                 >
                   {loading ? 'Saving...' : 'Save Changes'}
@@ -6006,7 +6087,7 @@ export default function PoultryMod({
                 </button>
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="flex-1 h-11 bg-emerald-600 text-white rounded-xl text-xs font-extrabold uppercase shadow cursor-pointer hover:bg-emerald-700"
                 >
                   {loading ? 'Adding...' : 'Save Allocation'}
@@ -6163,7 +6244,7 @@ export default function PoultryMod({
               <div className="flex gap-2 pt-3">
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || farmAction.busy}
                   className="flex-1 h-12 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow hover:bg-emerald-700 transition-colors cursor-pointer flex items-center justify-center gap-2"
                 >
                   <Edit3 size={15} />
@@ -6313,7 +6394,7 @@ export default function PoultryMod({
                   setDeleteConfirmModal(null);
                   await act();
                 }}
-                disabled={loading}
+                disabled={loading || farmAction.busy}
                 className="flex-1 h-11 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
               >
                 <Trash2 size={14} />

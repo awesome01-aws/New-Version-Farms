@@ -93,7 +93,7 @@ export interface FeedRecord {
   species?: 'Rabbit' | 'Quail' | 'Poultry';
 }
 
-export type PoultryItemType = 'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed' | 'Quail' | 'Quail Chick' | 'Quail Egg';
+export type PoultryItemType = 'Fowl' | 'Egg' | 'Fertilized Egg' | 'Chick' | 'Turkey' | 'Feed' | 'Rabbit' | 'Quail' | 'Quail Chick' | 'Quail Egg';
 
 export interface PoultrySale {
   id: string;
@@ -106,11 +106,13 @@ export interface PoultrySale {
   flockId?: string;
   ageWeeks?: number;
   notes?: string;
-  species?: 'Chicken' | 'Turkey' | 'Quail';
+  species?: 'Chicken' | 'Turkey' | 'Quail' | 'Rabbit';
+  stockAction?: string;
   voided?: boolean;
 }
 
 export interface Mortality {
+  stockAction?: string;
   id: string;
   date: string; // YYYY-MM-DD
   flockId: string;
@@ -149,6 +151,7 @@ export interface CageLocation {
   id: string;
   blockName: string;
   cageName: string;
+  animalType?: 'Rabbit' | 'Quail' | 'Poultry';
 }
 
 export interface CageAllocation {
@@ -188,31 +191,37 @@ export interface RabbitAnimal {
   sex: 'female' | 'male' | 'unknown';
   breed?: string;
   birthDate?: string;
+  initialAgeWeeks?: number;
+  maturityAgeWeeks?: number;
+  maturityAcknowledged?: boolean;
   acquiredDate?: string;
   litterId?: string;
   motherId?: string;
   fatherId?: string;
   hutchId?: string;
   grouped: boolean;
-  status: 'active' | 'sold' | 'deceased';
+  status: 'active' | 'sold' | 'deceased' | 'eaten';
   notes?: string;
 }
 
-export interface RabbitHutch { id: string; name: string; notes?: string }
-export interface RabbitBreeding { id: string; date: string; doeId: string; buckId: string; expectedDate?: string; notes?: string }
+export interface RabbitHutch { id: string; name: string; cageId?: string; notes?: string }
+export interface RabbitBreeding { id: string; date: string; doeId: string; buckId: string; expectedDate?: string; closed?: boolean; notes?: string }
 export interface RabbitLitter { id: string; birthDate: string; doeId: string; buckId: string; breedingId?: string; kitIds: string[]; notes?: string }
 export interface RabbitMove { id: string; date: string; rabbitIds: string[]; fromHutchId?: string; toHutchId: string; notes?: string }
 export interface RabbitLoss { id: string; date: string; rabbitIds: string[]; cause?: string; voided?: boolean }
 export interface RabbitSale { id: string; date: string; rabbitIds: string[]; buyerName: string; totalAmount: number; voided?: boolean }
+export interface RabbitEaten { id: string; date: string; rabbitIds: string[]; notes?: string; voided?: boolean }
 export interface AnimalCareRecord { id: string; date: string; species: 'Rabbit' | 'Quail'; targetId: string; kind: 'health' | 'weight' | 'feed'; detail?: string; amount?: number; unit?: 'kg' | 'g' | 'FCFA'; notes?: string }
 export interface QuailEggUse { id: string; date: string; kind: 'sold' | 'eaten' | 'set' | 'adjustment'; quantity: number; buyerName?: string; amount?: number; incubatorId?: string; saleId?: string; notes?: string; voided?: boolean }
 
 export interface FowlEatenRecord {
+  stockAction?: string;
+  voided?: boolean;
   id: string;
   date: string; // YYYY-MM-DD
   flockId: string;
   flockName: string;
-  species?: 'Chicken' | 'Turkey';
+  species?: 'Chicken' | 'Turkey' | 'Quail' | 'Rabbit';
   breed?: string;
   quantity: number;
   ageWeeks: number;
@@ -240,6 +249,7 @@ export interface DbSchema {
   rabbit_moves?: RabbitMove[];
   rabbit_losses?: RabbitLoss[];
   rabbit_sales?: RabbitSale[];
+  rabbit_eaten?: RabbitEaten[];
   animal_care?: AnimalCareRecord[];
   quail_egg_use?: QuailEggUse[];
   farm_action_receipts?: string[];

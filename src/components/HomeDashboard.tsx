@@ -1,11 +1,14 @@
 import React from 'react';
 import { ArrowRight, ArrowRightLeft, Bird, Egg, HeartPulse, Package, Receipt, ShoppingBag, Users, Utensils, BarChart3, Plus, X, RotateCcw, Rabbit } from 'lucide-react';
-import { ActiveTab, DailyEggCollection, Expense, FeedRecord, Flock, IncubatorRecord, PoultrySale, RabbitSale } from '../types';
+import { ActiveTab, DailyEggCollection, Expense, FeedRecord, Flock, IncubatorRecord, PoultrySale, RabbitSale, DbSchema } from '../types';
+import { rabbitReminders } from '../lib/farmViews';
+import { useFarmToday } from '../lib/useFarmToday';
+import { useFarmNotifications } from '../lib/farmNotifications';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 
 interface Props {
-  db: {
+  db: Partial<DbSchema> & {
     flocks: Flock[];
     incubator_records: IncubatorRecord[];
     poultry_sales: PoultrySale[];
@@ -28,7 +31,9 @@ interface HatcheryTask {
 }
 
 export default function HomeDashboard({ db, currentUserName, setActiveTab, onTriggerQuickForm, onOpenEditRecord }: Props) {
-  const today = getCameroonTodayISO();
+  const today = useFarmToday();
+  const rabbitTasks = rabbitReminders(db, today);
+  useFarmNotifications(rabbitTasks);
   const todayTime = Date.parse(`${today}T00:00:00Z`);
   const [dismissedTasks, setDismissedTasks] = React.useState<string[]>([]);
   const [eggReminderDismissed, setEggReminderDismissed] = React.useState(false);
@@ -98,8 +103,8 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     { label: 'Transfer birds', icon: ArrowRightLeft, key: 'transfer' },
     { label: 'Feed', icon: Package, key: 'feed' },
     { label: 'Expenses', icon: Receipt, key: 'expense' },
-    { label: 'Bird loss', icon: HeartPulse, key: 'mortality' },
-    { label: 'Birds eaten', icon: Utensils, key: 'fowls_eaten' },
+    { label: 'Animal loss', icon: HeartPulse, key: 'mortality' },
+    { label: 'Animals used at home', icon: Utensils, key: 'fowls_eaten' },
   ];
 
   return <div id="dashboard_tab" className="space-y-6 pb-12">
@@ -123,6 +128,8 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
         <span className="block text-xs sm:text-sm text-slate-600 mt-1 font-medium">{item.label}</span>
       </div>)}
     </section>
+
+    {rabbitTasks.length > 0 && <section aria-label="Rabbit reminders" className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-4"><h2 className="text-lg font-bold text-emerald-950">Rabbit reminders</h2>{rabbitTasks.map(task => <button type="button" key={task.id} onClick={() => open('farm', 'rabbits')} className="min-h-12 w-full rounded-xl bg-white p-3 text-left"><strong className="block">{task.title}</strong><span className="text-sm text-slate-600">{task.description}</span><span className="mt-1 block text-sm font-semibold text-emerald-800">Open rabbit records →</span></button>)}</section>}
 
     {activeBatches > 0 && <button type="button" onClick={() => open('incubator', 'active_batches')} className="w-full min-h-12 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-left text-sm font-semibold text-emerald-900 flex items-center justify-between gap-3">
       <span>{incubatingEggs.toLocaleString()} eggs in {activeBatches} active {activeBatches === 1 ? 'batch' : 'batches'}</span><span className="inline-flex items-center gap-1 whitespace-nowrap">View batches <ArrowRight size={16} /></span>

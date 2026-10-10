@@ -13,6 +13,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, DbSchema } from '../types';
 import { quailEggBalance } from '../lib/farmActions';
+import { farmRecordViews } from '../lib/farmViews';
 import { getCameroonTodayISO, formatDateDDMMYYYY, formatDateShortDDMM, formatFlockAge } from '../utils/dateUtils';
 
 export type PdfPeriod = '1_week' | '2_weeks' | '1_month' | '6_months' | '1_year' | 'all_time';
@@ -73,7 +74,7 @@ export function generatePdfReport(
   const rabbitSales = (db.rabbit_sales || []).filter(s => !s.voided && filterByPdfPeriod(s.date, period));
   const feedRecs = db.feed_records.filter(f => filterByPdfPeriod(f.date, period));
   const expenseRecs = db.expenses.filter(e => filterByPdfPeriod(e.date, period));
-  const mortalityRecs = db.mortality.filter(m => !m.voided && filterByPdfPeriod(m.date, period));
+  const mortalityRecs = farmRecordViews(db).mortality.filter(m => filterByPdfPeriod(m.date, period));
   const flocks = db.flocks; // Current flock stock
 
   // Calculate Key Summary Metrics
@@ -502,7 +503,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
       const dateStr = d.toISOString().split('T')[0];
       const displayDate = formatDateShortDDMM(d);
 
-      const dayRecords = db.mortality.filter(m => !m.voided && m.date === dateStr);
+      const dayRecords = farmRecordViews(db).mortality.filter(m => m.date === dateStr);
       const totalQty = dayRecords.reduce((acc, m) => acc + (m.quantity || 0), 0);
       const causes = Array.from(new Set(dayRecords.map(m => m.cause).filter(Boolean))).join(', ');
 
@@ -514,7 +515,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
       });
     }
     return data;
-  }, [db.mortality]);
+  }, [db.mortality, db.rabbit_losses, db.rabbits]);
 
   const total30DayMortality = useMemo(() => {
     return mortality30DaysData.reduce((acc, d) => acc + d.mortality, 0);
@@ -715,6 +716,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
           { label: 'Rabbits on farm', value: (db.rabbits || []).filter(item => item.status === 'active').length.toLocaleString() },
           { label: 'Quail on farm', value: db.flocks.filter(item => item.species === 'Quail' || item.breed?.toLowerCase().includes('quail')).reduce((sum, item) => sum + item.quantity, 0).toLocaleString() },
           { label: 'Quail eggs available', value: quailEggBalance(db as DbSchema).toLocaleString() },
+          { label: 'Animals used at home', value: farmRecordViews(db).fowls_eaten.filter(item => filterByDate(item.date)).reduce((sum, item) => sum + item.quantity, 0).toLocaleString() },
           { label: 'Rabbit and quail sales', value: ((db.rabbit_sales || []).filter(item => !item.voided && filterByDate(item.date)).reduce((sum, item) => sum + item.totalAmount, 0) + db.poultry_sales.filter(item => item.species === 'Quail' && !item.voided && filterByDate(item.date)).reduce((sum, item) => sum + item.totalAmount, 0)).toLocaleString() + ' FCFA' },
           { label: 'Rabbit costs', value: ((db.expenses || []).filter(item => item.species === 'Rabbit' && filterByDate(item.date)).reduce((sum, item) => sum + item.amount, 0) + (db.feed_records || []).filter(item => item.species === 'Rabbit' && filterByDate(item.date)).reduce((sum, item) => sum + item.totalCost, 0)).toLocaleString() + ' FCFA' },
           { label: 'Quail costs', value: ((db.expenses || []).filter(item => item.species === 'Quail' && filterByDate(item.date)).reduce((sum, item) => sum + item.amount, 0) + (db.feed_records || []).filter(item => item.species === 'Quail' && filterByDate(item.date)).reduce((sum, item) => sum + item.totalCost, 0)).toLocaleString() + ' FCFA' }
@@ -1049,7 +1051,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
           </button>
 
           <button
-            onClick={() => handleDownloadCSV('mortality', db.mortality)}
+            onClick={() => handleDownloadCSV('mortality', farmRecordViews(db).mortality)}
             className="p-3.5 bg-slate-50 border border-slate-100 hover:border-rose-200 hover:bg-rose-50/10 rounded-2xl flex flex-col items-center justify-center text-center gap-1 transition-colors cursor-pointer"
           >
             <FileSpreadsheet size={20} className="text-rose-600" />
@@ -1060,7 +1062,7 @@ export default function ReportsMod({ db }: ReportsModProps) {
             ['rabbits', db.rabbits || []], ['rabbit_litters', db.rabbit_litters || []],
             ['rabbit_breedings', db.rabbit_breedings || []], ['rabbit_hutches', db.rabbit_hutches || []],
             ['rabbit_moves', db.rabbit_moves || []], ['rabbit_losses', db.rabbit_losses || []],
-            ['rabbit_sales', db.rabbit_sales || []], ['animal_care', db.animal_care || []],
+            ['rabbit_sales', db.rabbit_sales || []], ['rabbit_eaten', db.rabbit_eaten || []], ['animal_care', db.animal_care || []],
             ['quail_egg_use', db.quail_egg_use || []], ['daily_egg_collections', db.daily_egg_collections || []]
           ].map(([name, rows]) => <button key={name as string} type="button" onClick={() => handleDownloadCSV(name as string, rows as any[])} className="p-3.5 bg-slate-50 border border-slate-100 hover:border-teal-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1"><FileSpreadsheet size={20} className="text-teal-600" /><span className="text-xs font-bold text-slate-800">{(name as string).replaceAll('_', ' ')}</span><span className="text-xs text-slate-500">{(rows as any[]).length} rows</span></button>)}
         </div>

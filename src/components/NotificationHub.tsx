@@ -1,22 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, BellOff, X, Phone, MessageSquare, ArrowRight, CheckCircle2, ShieldAlert, Egg } from 'lucide-react';
-import { IncubatorRecord, DailyEggCollection } from '../types';
+import { IncubatorRecord, DailyEggCollection, DbSchema } from '../types';
+import { rabbitReminders } from '../lib/farmViews';
+import { notifyFarmReminder } from '../lib/farmNotifications';
+import { useFarmToday } from '../lib/useFarmToday';
 import { getCameroonTodayISO, formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface NotificationHubProps {
-  db: {
+  db: Partial<DbSchema> & {
     incubator_records: IncubatorRecord[];
     daily_egg_collections?: DailyEggCollection[];
   };
   onOpenEditRecord: (record: IncubatorRecord) => void;
   onOpenEggCollection?: () => void;
+  onOpenRabbits?: () => void;
   isOpen: boolean;
   onClose: () => void;
 }
 
 export interface ActiveNotification {
   id: string;
-  type: 'day18' | 'day21' | 'eggCollection';
+  type: 'day18' | 'day21' | 'eggCollection' | 'rabbit';
   title: string;
   description: string;
   clientName?: string;
@@ -27,7 +31,7 @@ export interface ActiveNotification {
   record?: IncubatorRecord;
 }
 
-export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollection, isOpen, onClose }: NotificationHubProps) {
+export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollection, onOpenRabbits, isOpen, onClose }: NotificationHubProps) {
   const [permission, setPermission] = useState<NotificationPermission>(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
   );
@@ -36,15 +40,15 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
   const sentWebNotificationsRef = useRef<Set<string>>(new Set());
 
   // Derive notifications list in real-time
-  const todayStr = getCameroonTodayISO();
+  const todayStr = useFarmToday();
   const todayTime = new Date(todayStr).getTime();
 
   const getActiveNotifications = (): ActiveNotification[] => {
-    const list: ActiveNotification[] = [];
+    const list: ActiveNotification[] = rabbitReminders(db, todayStr).map(item => ({ ...item, type: 'rabbit' }));
     
     // 1. Check 6:00 PM Daily Egg Collection Alert
     const now = new Date();
-    const currentHour = now.getHours();
+    const currentHour = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(now));
     const hasEggRecordToday = (db.daily_egg_collections || []).some((rec) => rec.date === todayStr && rec.poultryRecorded !== false);
 
     if (currentHour >= 18 && !hasEggRecordToday) {
@@ -142,10 +146,9 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
         if (!sentWebNotificationsRef.current.has(reminder.id)) {
           sentWebNotificationsRef.current.add(reminder.id);
           try {
-            new Notification(reminder.title, {
-              body: reminder.description,
-              icon: '/apple-touch-icon.png'
-            });
+            const key = `nvf_notice_${reminder.id}`;
+            if (reminder.type === 'rabbit' && localStorage.getItem(key)) return;
+            void notifyFarmReminder(reminder).then(sent => { if (sent && reminder.type === 'rabbit') localStorage.setItem(key, 'sent'); }).catch(() => {});
           } catch (err) {
             console.error('Failed to trigger web notification:', err);
           }
@@ -243,6 +246,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
               </p>
               
               {activeReminders.map((reminder) => {
+                if (reminder.type === 'rabbit') return <div key={reminder.id} className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50 p-4"><h4 className="font-bold text-emerald-950">{reminder.title}</h4><p className="text-sm text-slate-700">{reminder.description}</p><button type="button" onClick={() => { onOpenRabbits?.(); onClose(); }} className="min-h-12 rounded-xl bg-emerald-700 px-4 font-semibold text-white">Open rabbit records</button></div>;
                 if (reminder.type === 'eggCollection') {
                   return (
                     <div 

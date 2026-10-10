@@ -12,7 +12,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import XLSX from "xlsx";
 import { initializeApp, applicationDefault } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
-import { applyFarmAction, ensureFarmArrays, quailEggBalance } from './src/lib/farmActions';
+import { applyFarmAction, ensureFarmArrays, quailEggBalance, isProtectedFarmMutation } from './src/lib/farmActions';
 
 function cameroonDate(date: Date = new Date()): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
@@ -1170,6 +1170,7 @@ async function startServer() {
       rabbit_moves: db.rabbit_moves || [],
       rabbit_losses: db.rabbit_losses || [],
       rabbit_sales: db.rabbit_sales || [],
+      rabbit_eaten: db.rabbit_eaten || [],
       animal_care: db.animal_care || [],
       quail_egg_use: db.quail_egg_use || []
     });
@@ -1495,6 +1496,10 @@ async function startServer() {
   });
 
   // Poultry Sales
+  app.use(['/api/sales', '/api/mortality', '/api/fowls-eaten', '/api/bulk-delete', '/api/bulk-update'], requireAuth, (req, res, next) => {
+    if (isProtectedFarmMutation(loadDb(), req.originalUrl.split('?')[0], req.method, req.body)) return res.status(409).json({ error: 'Use the linked Farm action to record or reverse rabbit and quail stock. This keeps animals, cages and balances together.' });
+    next();
+  });
   app.post("/api/sales", requireAuth, (req, res) => {
     const db = loadDb();
     const { id, date, itemType, quantity, unitPrice, buyerName, notes, flockId, ageWeeks } = req.body;
@@ -1799,6 +1804,9 @@ async function startServer() {
       return res.status(404).json({ error: "Cage not found in registry." });
     }
 
+    const cage = db.cages[index];
+    if ((db.rabbit_hutches || []).some((h: any) => h.id === cage.id || h.cageId === cage.id)) return res.status(409).json({ error: 'This cage is linked to rabbit housing and must be kept with its history.' });
+    if ((db.cage_allocations || []).some((a: any) => a.cageName === cage.cageName && a.blockName === cage.blockName && a.quantity > 0)) return res.status(409).json({ error: 'Move the animals out before removing this cage.' });
     db.cages.splice(index, 1);
     saveDb(db);
     res.json({ success: true });
@@ -3099,6 +3107,7 @@ function calculateCurrentAgeWeeks(
       if (!endpoint || !method) continue;
 
       try {
+        if (isProtectedFarmMutation(db, endpoint, method, body)) throw new Error('Use linked Farm actions for rabbit and quail changes.');
         if (endpoint === "/api/flocks" && method === "POST") {
           if (body && body.name && body.breed) {
             const flockId = body.id || crypto.randomUUID();

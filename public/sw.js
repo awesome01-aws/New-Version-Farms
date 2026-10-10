@@ -22,6 +22,18 @@ self.addEventListener('activate', event => {
   })());
 });
 
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  if (event.notification.data?.section !== 'rabbits') return;
+  event.waitUntil((async () => {
+    const target = new URL('/?farm=rabbits', self.location.origin).href;
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const existing = windows.find(client => new URL(client.url).origin === self.location.origin);
+    if (existing) { await existing.navigate(target); await existing.focus(); }
+    else await self.clients.openWindow(target);
+  })());
+});
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);

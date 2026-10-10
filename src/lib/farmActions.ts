@@ -3,6 +3,20 @@ import type { DbSchema, RabbitAnimal, RabbitSale, QuailEggUse } from '../types';
 export type FarmAction = { id: string; kind: string; payload: Record<string, unknown> };
 type FarmDb = DbSchema & Record<string, unknown>;
 
+export function isProtectedFarmMutation(db: Partial<DbSchema>, endpoint: string, method: string, body: Record<string, any> = {}): boolean {
+  const quailFlock = (id: string) => (db.flocks || []).some(f => f.id === id && isQuailFlock(f));
+  const saleIds = new Set([...(db.rabbit_sales || []).map(r => r.id), ...(db.poultry_sales || []).filter(r => r.species === 'Quail' || r.itemType.startsWith('Quail')).map(r => r.id)]);
+  const lossIds = new Set([...(db.rabbit_losses || []).map(r => r.id), ...(db.mortality || []).filter(r => quailFlock(r.flockId)).map(r => r.id)]);
+  const eatenIds = new Set([...(db.rabbit_eaten || []).map(r => r.id), ...(db.fowls_eaten || []).filter(r => quailFlock(r.flockId) || r.stockAction).map(r => r.id)]);
+  if (method === 'GET') return false;
+  const sets: Record<string, Set<string>> = { sales: saleIds, mortality: lossIds, fowls_eaten: eatenIds };
+  if (endpoint === '/api/bulk-delete' || endpoint === '/api/bulk-update') return Array.isArray(body.ids) && body.ids.some((id: string) => sets[body.type]?.has(id));
+  const match = endpoint.match(/^\/api\/(sales|mortality|fowls-eaten)(?:\/([^/]+))?$/);
+  if (!match) return false;
+  const key = match[1] === 'fowls-eaten' ? 'fowls_eaten' : match[1];
+  return !!(sets[key]?.has(match[2] || body.id) || body.rabbitIds || body.itemType === 'Rabbit' || String(body.itemType || '').startsWith('Quail') || (body.flockId && quailFlock(body.flockId)));
+}
+
 function fail(message: string): never { throw new Error(message); }
 function text(value: unknown, label: string, required = true): string {
   const result = typeof value === 'string' ? value.trim() : '';
@@ -37,7 +51,7 @@ function addDays(day: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 export function ensureFarmArrays(db: FarmDb): void {
-  for (const key of ['rabbits', 'rabbit_hutches', 'rabbit_breedings', 'rabbit_litters', 'rabbit_moves', 'rabbit_losses', 'rabbit_sales', 'animal_care', 'quail_egg_use', 'farm_action_receipts', 'daily_egg_collections', 'flocks', 'poultry_sales', 'incubator_records', 'cage_allocations', 'cage_transfers'] as const) {
+  for (const key of ['rabbits', 'rabbit_hutches', 'rabbit_breedings', 'rabbit_litters', 'rabbit_moves', 'rabbit_losses', 'rabbit_sales', 'rabbit_eaten', 'fowls_eaten', 'animal_care', 'quail_egg_use', 'farm_action_receipts', 'daily_egg_collections', 'flocks', 'poultry_sales', 'incubator_records', 'cage_allocations', 'cage_transfers'] as const) {
     if (!Array.isArray(db[key])) (db as Record<string, unknown>)[key] = [];
   }
 }
@@ -60,7 +74,11 @@ function activeRabbits(db: FarmDb, value: unknown): RabbitAnimal[] {
 }
 function validateHutch(db: FarmDb, value: unknown): string {
   const id = text(value, 'Hutch');
-  if (!db.rabbit_hutches!.some(item => item.id === id)) fail('Choose a saved hutch.');
+  if (!db.rabbit_hutches!.some(item => item.id === id)) {
+    const cage = db.cages?.find(item => item.id === id && item.animalType === 'Rabbit');
+    if (!cage) fail('Choose a saved rabbit cage or hutch.');
+    db.rabbit_hutches!.push({ id: cage.id, cageId: cage.id, name: `${cage.blockName} · ${cage.cageName}` });
+  }
   return id;
 }
 function resolveParents(db: FarmDb, doeValue: unknown, buckValue: unknown) {
@@ -76,31 +94,59 @@ function syncQuailCage(db: FarmDb, flockId: string): void {
     if (allocation.id === `flock-${flockId}` || allocation.flockName === flock.name) allocation.quantity = flock.quantity;
   }
 }
+function setRabbitAge(animal: RabbitAnimal, p: Record<string, unknown>): void {
+  if (p.birthDate !== undefined) {
+    const birthDate = p.birthDate ? date(p.birthDate) : undefined;
+    if (birthDate && animal.acquiredDate && birthDate > animal.acquiredDate) fail('Birth date cannot be after the date acquired.');
+    if (animal.litterId && birthDate !== animal.birthDate) fail('A bunny’s birth date belongs to its litter.');
+    animal.birthDate = birthDate;
+  }
+  if (p.initialAgeWeeks !== undefined) animal.initialAgeWeeks = p.initialAgeWeeks === '' ? undefined : count(p.initialAgeWeeks, 'Starting age in weeks', true);
+  if (p.maturityAgeWeeks !== undefined) {
+    const weeks = count(p.maturityAgeWeeks, 'Maturity reminder age');
+    if (weeks > 104) fail('Maturity reminder age must be at most 104 weeks.');
+    if (weeks !== animal.maturityAgeWeeks) animal.maturityAcknowledged = false;
+    animal.maturityAgeWeeks = weeks;
+  }
+}
 
 /** One validated operation changes a cloned database snapshot, both online and offline. */
 export function applyFarmAction(db: FarmDb, action: FarmAction): unknown {
-  ensureFarmArrays(db);
+  const snapshot = structuredClone(db);
+  ensureFarmArrays(snapshot);
   const id = text(action?.id, 'Operation ID');
   if (!/^[\w-]{8,100}$/.test(id)) fail('Invalid operation ID.');
   const p = action?.payload;
   if (!p || typeof p !== 'object' || Array.isArray(p)) fail('Invalid farm action.');
-  if (db.farm_action_receipts!.includes(id)) return { alreadySaved: true };
-  const result = performFarmAction(db, action, p, id);
-  db.farm_action_receipts!.push(id);
+  if (snapshot.farm_action_receipts!.includes(id)) return { alreadySaved: true };
+  const result = performFarmAction(snapshot, action, p, id);
+  snapshot.farm_action_receipts!.push(id);
+  Object.assign(db, snapshot);
   return result;
 }
 
 function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unknown>, id: string): unknown {
   switch (action.kind) {
+    case 'farm_cage_add': {
+      const animalType = text(p.animalType, 'Animal type');
+      if (!['Rabbit', 'Quail', 'Poultry'].includes(animalType)) fail('Choose an animal type.');
+      const blockName = text(p.blockName, 'Block or location');
+      const cageName = text(p.cageName, 'Cage name');
+      if ((db.cages || []).some(item => item.blockName.toLowerCase() === blockName.toLowerCase() && item.cageName.toLowerCase() === cageName.toLowerCase())) fail('This cage is already registered.');
+      const cage = { id, blockName, cageName, animalType: animalType as 'Rabbit' | 'Quail' | 'Poultry' };
+      (db.cages ||= []).push(cage);
+      if (animalType === 'Rabbit') db.rabbit_hutches!.push({ id, cageId: id, name: `${blockName} · ${cageName}` });
+      return cage;
+    }
     case 'quail_flock_add': {
       const name = text(p.name, 'Flock name');
       if (db.flocks.some(item => item.name.toLowerCase() === name.toLowerCase())) fail('A flock with this name already exists.');
       const quantity = count(p.quantity, 'Quail birds');
       const ageWeeks = count(p.ageWeeks ?? 0, 'Age in weeks', true);
       const cage = db.cages?.find(item => item.id === text(p.cageId, 'Bird cage'));
-      if (!cage) fail('Choose a saved bird cage.');
+      if (!cage || cage.animalType === 'Rabbit') fail('Choose a saved bird cage.');
       const addedDate = date(p.date);
-      const flock = { id: `flock-${id}`, name, breed: 'Quail', species: 'Quail' as const, quantity, ageWeeks, dateAdded: addedDate, notes: cage.cageName };
+      const flock = { id: `flock-${id}`, name, breed: 'Quail', species: 'Quail' as const, quantity, ageWeeks, initialAgeWeeks: ageWeeks, dateAdded: addedDate, notes: cage.cageName };
       db.flocks.push(flock);
       db.cage_allocations!.push({ id: `flock-${flock.id}`, blockName: cage.blockName, cageName: cage.cageName, flockName: name, species: 'Quail', quantity, ageWeeks, dateAdded: addedDate, dateTransferred: addedDate });
       return flock;
@@ -110,7 +156,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (!flock) fail('Choose a quail flock.');
       if (flock.quantity <= 0) fail('This flock has no quail to move.');
       const cage = db.cages?.find(item => item.id === text(p.cageId, 'Bird cage'));
-      if (!cage) fail('Choose a saved bird cage.');
+      if (!cage || cage.animalType === 'Rabbit') fail('Choose a saved bird cage.');
       const allocation = db.cage_allocations!.find(item => item.id === `flock-${flock.id}` || item.flockName === flock.name);
       const fromCage = allocation ? `${allocation.blockName} · ${allocation.cageName}` : flock.notes || 'Unassigned';
       if (allocation?.cageName === cage.cageName && allocation.blockName === cage.blockName) fail('Choose a different cage.');
@@ -130,6 +176,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (!['female', 'male', 'unknown'].includes(sex)) fail('Choose a valid sex.');
       const animal: RabbitAnimal = { id, name: text(p.name, 'Name', false), tag: text(p.tag, 'Tag', false), sex, breed: text(p.breed, 'Breed', false), acquiredDate: date(p.date), hutchId, grouped: false, status: 'active', notes: text(p.notes, 'Notes', false) };
       db.rabbits!.push(animal);
+      setRabbitAge(animal, p);
       return animal;
     }
     case 'rabbit_update': {
@@ -145,6 +192,12 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       }
       if (p.hutchId) animal.hutchId = validateHutch(db, p.hutchId);
       if (p.notes !== undefined) animal.notes = text(p.notes, 'Notes', false);
+      setRabbitAge(animal, p);
+      return animal;
+    }
+    case 'rabbit_maturity_ack': {
+      const animal = rabbit(db, text(p.rabbitId, 'Rabbit'));
+      animal.maturityAcknowledged = true;
       return animal;
     }
     case 'rabbit_hutch': {
@@ -152,16 +205,27 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (existing) return existing;
       const name = text(p.name, 'Hutch name');
       if (db.rabbit_hutches!.some(item => item.name.toLowerCase() === name.toLowerCase())) fail('This hutch already exists.');
-      const hutch = { id, name, notes: text(p.notes, 'Notes', false) };
+      const hutch = { id, name, cageId: id, notes: text(p.notes, 'Notes', false) };
       db.rabbit_hutches!.push(hutch);
+      (db.cages ||= []).push({ id, blockName: 'Rabbits', cageName: name, animalType: 'Rabbit' });
       return hutch;
     }
     case 'rabbit_breeding': {
       const existing = db.rabbit_breedings!.find(item => item.id === id);
       if (existing) return existing;
       const { doe, buck } = resolveParents(db, p.doeId, p.buckId);
-      const breeding = { id, date: date(p.date), doeId: doe.id, buckId: buck.id, expectedDate: p.expectedDate ? date(p.expectedDate) : undefined, notes: text(p.notes, 'Notes', false) };
+      if (doe.status !== 'active' || buck.status !== 'active') fail('Breeding requires two live rabbits on the farm.');
+      const breedingDate = date(p.date);
+      const expectedDate = p.expectedDate ? date(p.expectedDate) : addDays(breedingDate, 31);
+      if (expectedDate <= breedingDate) fail('Expected birth must be after breeding.');
+      const breeding = { id, date: breedingDate, doeId: doe.id, buckId: buck.id, expectedDate, notes: text(p.notes, 'Notes', false) };
       db.rabbit_breedings!.push(breeding);
+      return breeding;
+    }
+    case 'rabbit_breeding_close': {
+      const breeding = db.rabbit_breedings!.find(item => item.id === text(p.breedingId, 'Breeding'));
+      if (!breeding) fail('Breeding was not found.');
+      breeding.closed = true;
       return breeding;
     }
     case 'rabbit_litter': {
@@ -173,6 +237,8 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       const breedingId = p.breedingId ? text(p.breedingId, 'Breeding') : undefined;
       if (breedingId && !db.rabbit_breedings!.some(item => item.id === breedingId && item.doeId === doe.id && item.buckId === buck.id)) fail('Choose a breeding for these parents.');
       const birthDate = date(p.date);
+      if (breedingId && db.rabbit_litters!.some(item => item.breedingId === breedingId)) fail('This breeding already has a litter.');
+      if (breedingId && birthDate < db.rabbit_breedings!.find(item => item.id === breedingId)!.date) fail('Birth cannot be before breeding.');
       const kitIds = Array.from({ length: quantity }, (_, index) => `${id}-kit-${index + 1}`);
       const litter = { id, birthDate, doeId: doe.id, buckId: buck.id, breedingId, kitIds, notes: text(p.notes, 'Notes', false) };
       db.rabbit_litters!.push(litter);
@@ -229,6 +295,22 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       sale.voided = true;
       return sale;
     }
+    case 'rabbit_eaten': {
+      const selected = activeRabbits(db, p.rabbitIds);
+      const record = { id, date: date(p.date), rabbitIds: selected.map(item => item.id), notes: text(p.notes, 'Notes', false) };
+      selected.forEach(item => { item.status = 'eaten'; });
+      db.rabbit_eaten!.push(record);
+      return record;
+    }
+    case 'rabbit_eaten_void': {
+      const record = db.rabbit_eaten!.find(item => item.id === text(p.recordId, 'Consumption record'));
+      if (!record) fail('Consumption record was not found.');
+      if (record.voided) return record;
+      if (record.rabbitIds.some(rabbitId => rabbit(db, rabbitId).status !== 'eaten')) fail('A rabbit has another status; review this record.');
+      record.rabbitIds.forEach(rabbitId => { rabbit(db, rabbitId).status = 'active'; });
+      record.voided = true;
+      return record;
+    }
     case 'rabbit_care':
     case 'quail_care': {
       const existing = db.animal_care!.find(item => item.id === id);
@@ -278,7 +360,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (kind === 'set') use.incubatorId = `farm-${id}`;
       db.quail_egg_use!.push(use);
       if (quailEggBalance(db) < 0) fail('Not enough quail eggs are available.');
-      if (kind === 'sold') db.poultry_sales.push({ id: use.saleId!, date: usedDate, itemType: 'Quail Egg', species: 'Quail', quantity, unitPrice: use.amount! / quantity, totalAmount: use.amount!, buyerName: use.buyerName!, notes: use.notes });
+      if (kind === 'sold') db.poultry_sales.push({ id: use.saleId!, stockAction: 'quail_egg_use_void', date: usedDate, itemType: 'Quail Egg', species: 'Quail', quantity, unitPrice: use.amount! / quantity, totalAmount: use.amount!, buyerName: use.buyerName!, notes: use.notes });
       if (kind === 'set') db.incubator_records.push({ id: use.incubatorId!, ownerType: 'farm', clientId: '', clientName: 'Farm-owned', clientMark: 'FARM', eggType: 'Quail', dateBrought: usedDate, day8Date: addDays(usedDate, 8), day18Date: addDays(usedDate, 15), day21Date: addDays(usedDate, 18), eggsCollected: quantity, specialCase: 'Free', ratePerEgg: 0, amountDue: 0, amountPaid: 0, eggsAfterScan: null, chicksHatched: null, clientPhone: '', notes: use.notes });
       return use;
     }
@@ -315,7 +397,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       const name = text(p.name, 'Flock name');
       if (db.flocks.some(item => item.name.toLowerCase() === name.toLowerCase())) fail('A flock with this name already exists.');
       const cage = db.cages?.find(item => item.id === text(p.cageId, 'Bird cage'));
-      if (!cage) fail('Choose a saved bird cage.');
+      if (!cage || cage.animalType === 'Rabbit') fail('Choose a saved bird cage.');
       const flock = { id: `flock-${id}`, name, breed: 'Quail', species: 'Quail', quantity: batch.chicksHatched, ageWeeks: 0, dateAdded: date(p.date), notes: cage.cageName };
       db.flocks.push(flock);
       if (!Array.isArray(db.cage_allocations)) db.cage_allocations = [];
@@ -332,7 +414,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (quantity > flock.quantity) fail('Not enough quail in this flock.');
       const amount = number(p.amount, 'Sale amount', true);
       const itemType = p.isChick ? 'Quail Chick' : 'Quail';
-      const sale = { id, date: date(p.date), itemType: itemType as 'Quail' | 'Quail Chick', species: 'Quail' as const, flockId: flock.id, quantity, unitPrice: amount / quantity, totalAmount: amount, buyerName: text(p.buyerName, 'Buyer'), notes: text(p.notes, 'Notes', false) };
+      const sale = { id, stockAction: 'quail_live_sale_void', date: date(p.date), itemType: itemType as 'Quail' | 'Quail Chick', species: 'Quail' as const, flockId: flock.id, quantity, unitPrice: amount / quantity, totalAmount: amount, buyerName: text(p.buyerName, 'Buyer'), notes: text(p.notes, 'Notes', false) };
       flock.quantity -= quantity;
       syncQuailCage(db, flock.id);
       db.poultry_sales.push(sale);
@@ -367,9 +449,31 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       if (quantity > flock.quantity) fail('Losses cannot exceed the quail in this flock.');
       flock.quantity -= quantity;
       syncQuailCage(db, flock.id);
-      const loss = { id, date: date(p.date), flockId: flock.id, flockName: flock.name, quantity, cause: text(p.cause, 'Cause', false) };
+      const loss = { id, stockAction: 'quail_loss_void', date: date(p.date), flockId: flock.id, flockName: flock.name, quantity, cause: text(p.cause, 'Cause', false) };
       db.mortality.push(loss);
       return loss;
+    }
+    case 'quail_eaten': {
+      const flock = db.flocks.find(item => item.id === text(p.flockId, 'Quail flock') && isQuailFlock(item));
+      if (!flock) fail('Choose a quail flock.');
+      const quantity = count(p.quantity, 'Quail used at home');
+      if (quantity > flock.quantity) fail('Not enough quail in this flock.');
+      const record = { id, stockAction: 'quail_eaten_void', date: date(p.date), flockId: flock.id, flockName: flock.name, species: 'Quail' as const, quantity, ageWeeks: flock.ageWeeks, notes: text(p.notes, 'Notes', false) };
+      flock.quantity -= quantity;
+      syncQuailCage(db, flock.id);
+      db.fowls_eaten!.push(record);
+      return record;
+    }
+    case 'quail_eaten_void': {
+      const record = db.fowls_eaten!.find(item => item.id === text(p.recordId, 'Consumption record') && item.stockAction === 'quail_eaten_void');
+      if (!record) fail('Consumption record was not found.');
+      if (record.voided) return record;
+      const flock = db.flocks.find(item => item.id === record.flockId);
+      if (!flock) fail('The source flock is missing.');
+      flock.quantity += record.quantity;
+      syncQuailCage(db, flock.id);
+      record.voided = true;
+      return record;
     }
     case 'quail_loss_void': {
       const loss = db.mortality.find(item => item.id === text(p.lossId, 'Loss') && db.flocks.some(flock => flock.id === item.flockId && isQuailFlock(flock)));

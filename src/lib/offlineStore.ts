@@ -6,7 +6,7 @@
 import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, RabbitAnimal, RabbitHutch, RabbitBreeding, RabbitLitter, RabbitMove, RabbitLoss, RabbitSale, AnimalCareRecord, QuailEggUse } from '../types';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { apiUrl } from './apiOrigin';
-import { applyFarmAction } from './farmActions';
+import { applyFarmAction, isProtectedFarmMutation } from './farmActions';
 
 export interface DbData {
   users?: any[];
@@ -24,6 +24,7 @@ export interface DbData {
   rabbit_moves?: RabbitMove[];
   rabbit_losses?: RabbitLoss[];
   rabbit_sales?: RabbitSale[];
+  rabbit_eaten?: import('../types').RabbitEaten[];
   animal_care?: AnimalCareRecord[];
   quail_egg_use?: QuailEggUse[];
 }
@@ -196,6 +197,7 @@ export function executeLocalMutation(
 
   try {
     // --- FLOCKS ---
+    if (isProtectedFarmMutation(db as any, endpoint, method, body || {})) throw new Error('Use linked Farm actions for rabbit and quail stock changes.');
     if (endpoint === '/api/farm/actions' && method === 'POST') {
       responseData = { success: true, result: applyFarmAction(db as any, body) };
       description = `Farm: ${body.kind}`;

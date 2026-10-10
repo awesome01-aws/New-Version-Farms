@@ -13,6 +13,8 @@ const PoultryMod = React.lazy(() => import('./components/PoultryMod'));
 const IncubatorMod = React.lazy(() => import('./components/IncubatorMod'));
 const ReportsMod = React.lazy(() => import('./components/ReportsMod'));
 import { RefreshCw, Sparkles } from 'lucide-react';
+import { rabbitReminders } from './lib/farmViews';
+import { useFarmToday } from './lib/useFarmToday';
 const NotificationHub = React.lazy(() => import('./components/NotificationHub'));
 const ExcelImportModal = React.lazy(() => import('./components/ExcelImportModal'));
 const GlobalSearchModal = React.lazy(() => import('./components/GlobalSearchModal'));
@@ -77,9 +79,9 @@ export default function App() {
   }, []);
 
   // Derive unread/active notifications count for Day 18, Day 21, and 6 PM Egg Collection
-  const todayStr = getCameroonTodayISO();
+  const todayStr = useFarmToday();
   const todayTime = new Date(todayStr).getTime();
-  const currentHour = new Date().getHours();
+  const currentHour = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(new Date()));
   const hasEggRecordToday = (db.daily_egg_collections || []).some(rec => rec.date === todayStr && rec.poultryRecorded !== false);
 
   const incubatorRemindersCount = db.incubator_records?.reduce((acc, rec) => {
@@ -111,10 +113,13 @@ export default function App() {
     return acc;
   }, 0) || 0;
 
-  const activeRemindersCount = incubatorRemindersCount + (currentHour >= 18 && !hasEggRecordToday ? 1 : 0);
+  const activeRemindersCount = incubatorRemindersCount + rabbitReminders(db, todayStr).length + (currentHour >= 18 && !hasEggRecordToday ? 1 : 0);
 
   // Quick Action Form forwarders (enables triggering collapsible toggles from Dashboard)
   const [quickFormKey, setQuickFormKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('farm') === 'rabbits') { setActiveTab('farm'); setQuickFormKey('rabbits'); }
+  }, []);
 
   // Sync / Refresh main DB state with ETag caching
   const lastETagRef = React.useRef<string | null>(null);
@@ -343,6 +348,7 @@ export default function App() {
         isOpen={isNotificationHubOpen} 
         onClose={() => setIsNotificationHubOpen(false)} 
         onOpenEditRecord={handleOpenEditRecord}
+        onOpenRabbits={() => { setActiveTab('farm'); setQuickFormKey('rabbits'); }}
         onOpenEggCollection={() => {
           setActiveTab('farm');
           setQuickFormKey('egg_collection');
