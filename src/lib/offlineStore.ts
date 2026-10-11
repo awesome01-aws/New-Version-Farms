@@ -48,8 +48,8 @@ export function getSyncProblem(): string | null { return localStorage.getItem(SY
 const networkFetch = window.fetch.bind(window);
 
 // Event emitter helpers
-export function notifyOfflineChange(status?: string) {
-  window.dispatchEvent(new CustomEvent('nvf_offline_change', { detail: { status } }));
+export function notifyOfflineChange(status?: string, change?: 'data' | 'queue') {
+  window.dispatchEvent(new CustomEvent('nvf_offline_change', { detail: { status, change } }));
 }
 
 export function getStandardRateBySpecies(eggType?: string): number {
@@ -147,9 +147,11 @@ export function getOfflineDb(): DbData {
   };
 }
 
-export function saveOfflineDb(db: DbData): void {
+export function saveOfflineDb(db: DbData, notifyDataChange = false): void {
   localStorage.setItem(DB_CACHE_KEY, JSON.stringify(db));
-  notifyOfflineChange();
+  // A refreshed cache is not a new edit. Emitting a data event for every GET
+  // makes App fetch again indefinitely.
+  if (notifyDataChange) notifyOfflineChange(undefined, 'data');
 }
 
 // 2. Pending Sync Queue Operations
@@ -167,7 +169,7 @@ export function getSyncQueue(): QueuedMutation[] {
 
 export function saveSyncQueue(queue: QueuedMutation[]): void {
   localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
-  notifyOfflineChange();
+  notifyOfflineChange(undefined, 'queue');
 }
 
 export function queueMutation(mutation: Omit<QueuedMutation, 'id' | 'timestamp'>): QueuedMutation {
@@ -184,7 +186,7 @@ export function queueMutation(mutation: Omit<QueuedMutation, 'id' | 'timestamp'>
 
 export function clearSyncQueue(): void {
   localStorage.removeItem(SYNC_QUEUE_KEY);
-  notifyOfflineChange();
+  notifyOfflineChange(undefined, 'queue');
 }
 
 // 3. Local Offline Mutation Handlers
@@ -671,7 +673,7 @@ export function executeLocalMutation(
       type: endpoint.split('/')[2] || 'record',
       description
     });
-    saveOfflineDb(db);
+    saveOfflineDb(db, true);
 
     return { responseData, offlineQueued: true };
   } catch (err) {
@@ -682,30 +684,40 @@ export function executeLocalMutation(
 
 // 4. Synchronization Engine
 let syncInProgress = false;
-export async function syncPendingQueue(token: string): Promise<{ success: boolean; syncedCount: number }> {
-  if (syncInProgress) return { success: false, syncedCount: 0 };
+export async function syncPendingQueue(token: string): Promise<{ success: boolean; syncedCount: number; retryable: boolean }> {
+  if (syncInProgress) return { success: false, syncedCount: 0, retryable: true };
   const queue = getSyncQueue().sort((a, b) => a.timestamp - b.timestamp);
   if (queue.length === 0) {
-    return { success: true, syncedCount: 0 };
+    return { success: true, syncedCount: 0, retryable: false };
   }
 
   syncInProgress = true;
-  notifyOfflineChange('Syncing changes...');
+  notifyOfflineChange();
   let synced = 0;
+  let retryable = true;
   try {
     for (const item of queue) {
-      const response = await networkFetch(apiUrl(item.endpoint), {
-        method: item.method,
-        headers: {
-          'Authorization': token,
-          'Content-Type': 'application/json'
-        },
-        body: item.body ? JSON.stringify(item.body) : undefined
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      let response: Response;
+      try {
+        response = await networkFetch(apiUrl(item.endpoint), {
+          method: item.method,
+          headers: {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+          },
+          body: item.body ? JSON.stringify(item.body) : undefined,
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         localStorage.setItem(SYNC_PROBLEM_KEY, typeof body.error === 'string' ? body.error : `Server rejected a change (${response.status}).`);
+        retryable = response.status === 408 || response.status === 429 || response.status >= 500;
         break;
       }
       // Remove only this acknowledged operation. Keep operations added while sync is running.
@@ -721,18 +733,18 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
   }
   const remaining = getSyncQueue().length;
   if (remaining === 0) {
-    notifyOfflineChange('Synced successfully');
+    notifyOfflineChange();
     // Fetch fresh database snapshot from server
     try {
       const dataRes = await networkFetch(apiUrl('/api/data'), { headers: { 'Authorization': token } });
       if (dataRes.ok) {
         const freshDb = await dataRes.json();
-        saveOfflineDb(freshDb);
+        saveOfflineDb(freshDb, true);
       }
     } catch (e) {}
   } else {
-    notifyOfflineChange(`${remaining} changes still waiting to sync`);
+    notifyOfflineChange();
   }
 
-  return { success: remaining === 0, syncedCount: synced };
+  return { success: remaining === 0, syncedCount: synced, retryable };
 }

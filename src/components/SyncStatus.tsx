@@ -31,9 +31,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
 
     const handleOnline = () => {
       setIsOnline(true);
-      setToastMessage('Internet reconnected! Triggering auto-sync...');
-      setTimeout(() => setToastMessage(null), 4000);
-      handleManualSync();
+      refreshState();
     };
 
     const handleOffline = () => {
@@ -42,13 +40,9 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
       setTimeout(() => setToastMessage(null), 5000);
     };
 
-    const handleOfflineChange = (e: any) => {
+    const handleOfflineChange = () => {
       setPendingQueue(getSyncQueue());
       setSyncProblem(getSyncProblem());
-      if (e?.detail?.status) {
-        setToastMessage(e.detail.status);
-        setTimeout(() => setToastMessage(null), 4000);
-      }
     };
 
     window.addEventListener('online', handleOnline);
@@ -175,19 +169,21 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
             <div className="flex items-center gap-2">
               {!isOnline ? (
                 <WifiOff className="w-4 h-4 text-amber-500" />
+              ) : syncProblem ? (
+                <AlertCircle className="w-4 h-4 text-rose-600" />
               ) : (
                 <Wifi className="w-4 h-4 text-emerald-500" />
               )}
               <span className="font-bold text-slate-800">
-                {!isOnline ? 'Offline Storage Mode' : 'Network Connected'}
+                {!isOnline ? 'Internet unavailable' : syncProblem ? 'Farm server unavailable' : 'Internet available'}
               </span>
             </div>
             <span
               className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                !isOnline ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                !isOnline ? 'bg-amber-100 text-amber-800' : syncProblem ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
               }`}
             >
-              {!isOnline ? 'OFFLINE' : 'ONLINE'}
+              {!isOnline ? 'OFFLINE' : syncProblem ? 'WAITING' : 'ONLINE'}
             </span>
           </div>
 

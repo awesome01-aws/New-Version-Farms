@@ -35,7 +35,8 @@ export function setupOfflineInterceptor() {
     if ((urlString.includes('/api/data') || urlString.includes('/api/db')) && method === 'GET') {
       if (navigator.onLine) {
         try {
-          if (token && getSyncQueue().length > 0) await syncPendingQueue(token);
+          // Background reads must never replay queued writes. Replay has its own
+          // bounded scheduler below; otherwise a failed write makes every poll retry.
           if (getSyncQueue().length > 0) {
             return new Response(JSON.stringify(getOfflineDb()), { status: 200, headers: { 'Content-Type': 'application/json', 'X-NVF-Offline': 'pending' } });
           }
@@ -159,17 +160,53 @@ export function setupOfflineInterceptor() {
   }
 }
 
-// Auto-sync trigger on connection re-establishment
+// One retry controller owns background replay. Routine data reads and status
+// notifications never start a write, so an unavailable server cannot spin.
+let autoSyncInitialized = false;
 export function initAutoSyncListeners() {
-  window.addEventListener('online', () => {
-    console.log('[Connection Status] Reconnected to Internet! Triggering automatic sync...');
+  if (autoSyncInitialized) return;
+  autoSyncInitialized = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running = false;
+  let failures = 0;
+  let blocked = false;
+
+  const schedule = (delay: number) => {
+    if (timer || running || blocked || !navigator.onLine || getSyncQueue().length === 0) return;
+    timer = setTimeout(run, delay);
+  };
+
+  const run = async () => {
+    timer = undefined;
+    if (running || blocked || !navigator.onLine || getSyncQueue().length === 0) return;
+    running = true;
     const token = localStorage.getItem('nvf_operator_token') || 'open-access-operator';
-    if (token) {
-      syncPendingQueue(token).then(({ syncedCount }) => {
-        if (syncedCount > 0) {
-          console.log(`[Auto-Sync] Successfully synced ${syncedCount} queued records with server database.`);
-        }
-      });
+    try {
+      const result = await syncPendingQueue(token);
+      if (result.success) failures = 0;
+      else if (!result.retryable) blocked = true;
+      else failures = Math.min(failures + 1, 4);
+    } finally {
+      running = false;
+      if (!blocked) schedule(Math.min(120000, 15000 * 2 ** Math.max(0, failures - 1)));
+    }
+  };
+
+  window.addEventListener('nvf_offline_change', (event: Event) => {
+    if ((event as CustomEvent).detail?.change !== 'queue') return;
+    if (getSyncQueue().length === 0) {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      failures = 0;
+      blocked = false;
+    } else {
+      schedule(1500);
     }
   });
+  window.addEventListener('online', () => schedule(1000));
+  window.addEventListener('focus', () => schedule(1000));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') schedule(1000);
+  });
+  schedule(2000);
 }

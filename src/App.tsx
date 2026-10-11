@@ -187,8 +187,8 @@ export default function App() {
       syncDatabase(token, true);
     };
 
-    const handleOfflineDataChange = () => {
-      syncDatabase(token, true);
+    const handleOfflineDataChange = (event: Event) => {
+      if ((event as CustomEvent).detail?.change === 'data') syncDatabase(token, true);
     };
 
     window.addEventListener('focus', handleFocus);
