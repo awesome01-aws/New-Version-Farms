@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, RabbitAnimal, RabbitHutch, RabbitBreeding, RabbitLitter, RabbitMove, RabbitLoss, RabbitSale, AnimalCareRecord, QuailEggUse } from '../types';
+import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, RabbitAnimal, RabbitHutch, RabbitBreeding, RabbitLitter, RabbitMove, RabbitLoss, RabbitSale, AnimalCareRecord, QuailEggUse, DailyEggCollection } from '../types';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { apiUrl } from './apiOrigin';
-import { applyFarmAction, isProtectedFarmMutation } from './farmActions';
+import { applyFarmAction, isProtectedFarmMutation, quailEggBalance } from './farmActions';
 
 export interface DbData {
   users?: any[];
@@ -27,6 +27,7 @@ export interface DbData {
   rabbit_eaten?: import('../types').RabbitEaten[];
   animal_care?: AnimalCareRecord[];
   quail_egg_use?: QuailEggUse[];
+  daily_egg_collections?: DailyEggCollection[];
 }
 
 export interface QueuedMutation {
@@ -41,6 +42,8 @@ export interface QueuedMutation {
 
 const DB_CACHE_KEY = 'nvf_offline_db_cache_v2';
 const SYNC_QUEUE_KEY = 'nvf_offline_sync_queue_v2';
+const SYNC_PROBLEM_KEY = 'nvf_offline_sync_problem_v1';
+export function getSyncProblem(): string | null { return localStorage.getItem(SYNC_PROBLEM_KEY); }
 // Capture the browser transport before api.ts installs its offline interceptor.
 const networkFetch = window.fetch.bind(window);
 
@@ -196,9 +199,23 @@ export function executeLocalMutation(
   let description = `${method} ${endpoint}`;
 
   try {
-    // --- FLOCKS ---
+    // --- DAILY EGGS ---
     if (isProtectedFarmMutation(db as any, endpoint, method, body || {})) throw new Error('Use linked Farm actions for rabbit and quail stock changes.');
-    if (endpoint === '/api/farm/actions' && method === 'POST') {
+    if ((endpoint === '/api/daily_egg_collections' && method === 'POST') || (endpoint.startsWith('/api/daily_egg_collections/') && method === 'PUT')) {
+      const rows = (db.daily_egg_collections ||= []);
+      const date = String(body.date || getCameroonTodayISO());
+      const index = rows.findIndex(row => row.id === body.id || row.date === date || (method === 'PUT' && endpoint.endsWith(`/${row.id}`)));
+      if (method === 'PUT' && index < 0) throw new Error('Egg log is no longer on this phone. Refresh before editing.');
+      const previous = index >= 0 ? rows[index] : undefined;
+      const counts = ['brahmaEggs', 'turkeyEggs', 'quailEggs'].map(key => body[key] === undefined ? Number((previous as any)?.[key] || 0) : Number(body[key]));
+      if (counts.some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Egg counts must be zero or a positive whole number.');
+      const record: DailyEggCollection = { id: previous?.id || body.id || crypto.randomUUID(), date, brahmaEggs: counts[0], turkeyEggs: counts[1], quailEggs: counts[2], totalEggs: counts[0] + counts[1] + counts[2], poultryRecorded: true, recordedBy: String(body.recordedBy || JSON.parse(localStorage.getItem('nvf_operator_user') || '{}').name || 'Family member'), notes: String(body.notes || '') };
+      if (index >= 0) rows[index] = record; else rows.push(record);
+      if (quailEggBalance(db) < 0) throw new Error('This would make quail egg stock negative.');
+      body.id = record.id;
+      responseData = { success: true, record };
+      description = `Daily eggs: ${date} (${record.totalEggs} total)`;
+    } else if (endpoint === '/api/farm/actions' && method === 'POST') {
       responseData = { success: true, result: applyFarmAction(db as any, body) };
       description = `Farm: ${body.kind}`;
     } else if (endpoint === '/api/flocks' && method === 'POST') {
@@ -686,12 +703,18 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
         body: item.body ? JSON.stringify(item.body) : undefined
       });
 
-      if (!response.ok) break;
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        localStorage.setItem(SYNC_PROBLEM_KEY, typeof body.error === 'string' ? body.error : `Server rejected a change (${response.status}).`);
+        break;
+      }
       // Remove only this acknowledged operation. Keep operations added while sync is running.
       saveSyncQueue(getSyncQueue().filter(queued => queued.id !== item.id));
+      localStorage.removeItem(SYNC_PROBLEM_KEY);
       synced++;
     }
   } catch (err) {
+    localStorage.setItem(SYNC_PROBLEM_KEY, 'Cannot reach the farm server. Retry when connected.');
     console.warn('Pending changes remain on this device:', err);
   } finally {
     syncInProgress = false;

@@ -29,7 +29,7 @@ const DB_FILE = path.join(DATA_DIR, "db.json");
 const BACKUPS_DIR = path.join(DATA_DIR, "backups");
 const LOCAL_RECOVERY_MARKER = path.join(DATA_DIR, '.local_account_recovery_used');
 const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
-const firebaseConfig = fs.existsSync(firebaseConfigPath)
+const firebaseConfig = process.env.NVF_LOCAL_ONLY !== '1' && fs.existsSync(firebaseConfigPath)
   ? JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"))
   : null;
 if (!firebaseConfig && process.env.NODE_ENV === 'production' && process.env.NVF_LOCAL_ONLY !== '1') {
@@ -42,6 +42,7 @@ const firestoreDb: Firestore | null = firebaseConfig
 const cloudDocument = firestoreDb?.doc('app_data/main');
 let cloudRevision = 0;
 const requestSaves = new AsyncLocalStorage<Promise<void>[]>();
+const activityContext = new AsyncLocalStorage<{ actor: string; action: string; detail?: string; logged: boolean }>();
 let cloudWriteQueue: Promise<void> = Promise.resolve();
 
 // Ensure backups directory exists
@@ -796,6 +797,12 @@ async function refreshFromCloud() {
 const firestoreHydration = refreshFromCloud();
 
 function saveDb(data: any) {
+  const activity = activityContext.getStore();
+  if (activity && !activity.logged) {
+    (data.activity_log ||= []).unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), actor: activity.actor, action: activity.action, detail: activity.detail });
+    data.activity_log = data.activity_log.slice(0, 100);
+    activity.logged = true;
+  }
   data._updatedAt = new Date().toISOString();
   if (!cloudDocument || !firestoreDb) {
     saveDbLocalFileOnly(data);
@@ -993,6 +1000,35 @@ async function startServer() {
     next();
   }
 
+  // Keep a small shared history in the same save as each authenticated farm change.
+  app.use('/api', (req, _res, next) => {
+    if (!['POST', 'PUT', 'DELETE'].includes(req.method) || req.path.startsWith('/auth') || req.path === '/sync') return next();
+    const user = getAuthorizedUser(req);
+    if (!user) return next();
+    const label = req.path.startsWith('/farm/actions') ? String(req.body?.kind || 'farm record').replace(/_/g, ' ')
+      : req.path.startsWith('/daily_egg_collections') ? 'daily egg collection'
+      : req.path.startsWith('/cage-count-corrections') ? 'cage count correction'
+      : req.path.startsWith('/cage_transfers') ? 'cage move'
+      : req.path.startsWith('/cage_allocations') ? 'cage allocation'
+      : req.path.startsWith('/flocks') ? 'flock'
+      : req.path.startsWith('/sales') ? 'sale'
+      : req.path.startsWith('/mortality') ? 'animal loss'
+      : req.path.startsWith('/fowls-eaten') ? 'animals used at home'
+      : req.path.startsWith('/incubator') ? 'incubator batch'
+      : req.path.startsWith('/clients') ? 'client record'
+      : req.path.startsWith('/feed') ? 'feed record'
+      : req.path.startsWith('/expenses') ? 'expense'
+      : req.path.startsWith('/cages') ? 'cage'
+      : 'farm record';
+    const verb = req.method === 'POST' ? 'Recorded' : req.method === 'PUT' ? 'Updated' : 'Removed';
+    const farmKind = String(req.body?.kind || '');
+    const action = req.path.startsWith('/farm/actions') && farmKind === 'cage_count_correct' ? 'Corrected cage count'
+      : req.path.startsWith('/farm/actions') && farmKind.endsWith('_void') ? `Reversed ${farmKind.slice(0, -5).replace(/_/g, ' ')}`
+      : `${verb} ${label}`;
+    const detail = req.path.startsWith('/farm/actions') && req.body?.kind === 'cage_count_correct' ? String(req.body?.payload?.reason || '').trim().slice(0, 160) : undefined;
+    activityContext.run({ actor: String(user.name || user.username || 'Family member'), action, detail, logged: false }, next);
+  });
+
   // --- API ENDPOINTS ---
 
   // Auth Info: Check if setup is needed
@@ -1172,7 +1208,9 @@ async function startServer() {
       rabbit_sales: db.rabbit_sales || [],
       rabbit_eaten: db.rabbit_eaten || [],
       animal_care: db.animal_care || [],
-      quail_egg_use: db.quail_egg_use || []
+      quail_egg_use: db.quail_egg_use || [],
+      cage_count_corrections: db.cage_count_corrections || [],
+      activity_log: db.activity_log || []
     });
   });
 
@@ -1181,6 +1219,12 @@ async function startServer() {
     try {
       const db = loadDb();
       const result = applyFarmAction(db, req.body);
+      if (req.body?.kind === 'cage_count_correct' && result && typeof result === 'object' && !('alreadySaved' in result)) {
+        (result as any).recordedBy = getAuthorizedUser(req)?.name || 'Family member';
+        const activity = activityContext.getStore();
+        if (activity) activity.detail = `${(result as any).cageName} · ${(result as any).flockName}: ${(result as any).previousQuantity} → ${(result as any).quantity}. Why: ${(result as any).reason}`.slice(0, 260);
+      }
+      if (result && typeof result === 'object' && 'alreadySaved' in result) return res.json({ success: true, result });
       saveDb(db);
       res.json({ success: true, result });
     } catch (error) {
@@ -1862,6 +1906,12 @@ async function startServer() {
   app.put("/api/cage_allocations/:id", requireAuth, (req, res) => {
     const db = loadDb();
     const targetId = req.params.id;
+    const linkedFlock = targetId.startsWith('flock-') ? (db.flocks || []).find((f: any) => f.id === targetId.slice(6)) : undefined;
+    const existingAllocation = (db.cage_allocations || []).find((a: any) => a.id === targetId);
+    const currentQuantity = linkedFlock?.quantity ?? existingAllocation?.quantity;
+    if (req.body.quantity !== undefined && currentQuantity !== undefined && Number(req.body.quantity) !== Number(currentQuantity)) {
+      return res.status(400).json({ error: 'Use Correct count so the change and its reason are recorded together.' });
+    }
 
     if (req.body.quantity !== undefined && !isValidNonNegativeNumber(req.body.quantity)) {
       return res.status(400).json({ error: "Quantity must be a valid non-negative number." });
@@ -2133,9 +2183,11 @@ function calculateCurrentAgeWeeks(
   });
 
   // Daily Egg Collections API Routes
+  const eggCountsMatch = (row: any, expected: any) => row && expected && row.id === expected.id && Number(row.brahmaEggs || 0) === Number(expected.brahmaEggs || 0) && Number(row.turkeyEggs || 0) === Number(expected.turkeyEggs || 0) && Number(row.quailEggs || 0) === Number(expected.quailEggs || 0);
   app.post("/api/daily_egg_collections", requireAuth, (req, res) => {
     const db = loadDb();
     if (!db.daily_egg_collections) db.daily_egg_collections = [];
+    if (['brahmaEggs', 'turkeyEggs', 'quailEggs'].some(key => req.body[key] !== undefined && (!Number.isSafeInteger(Number(req.body[key])) || Number(req.body[key]) < 0))) return res.status(400).json({ error: 'Egg counts must be non-negative whole numbers.' });
     const { id, date, brahmaEggs, turkeyEggs, recordedBy, notes } = req.body;
 
     const recDate = date || cameroonDate();
@@ -2143,8 +2195,8 @@ function calculateCurrentAgeWeeks(
     const tEggs = Math.max(0, Number(turkeyEggs) || 0);
 
     const recId = id || crypto.randomUUID();
-    if (req.body.quailEggs !== undefined && (!Number.isSafeInteger(Number(req.body.quailEggs)) || Number(req.body.quailEggs) < 0)) return res.status(400).json({ error: 'Quail eggs must be a non-negative whole number.' });
     const existingIdx = db.daily_egg_collections.findIndex((e: any) => e.id === recId || e.date === recDate);
+    if (req.body.expected !== undefined && (req.body.expected === null ? existingIdx !== -1 : !eggCountsMatch(db.daily_egg_collections[existingIdx], req.body.expected))) return res.status(409).json({ error: 'Another family member changed this day’s egg count. Refresh and review the latest numbers.' });
     const qEggs = req.body.quailEggs !== undefined
       ? Math.max(0, Number(req.body.quailEggs) || 0)
       : (existingIdx !== -1 ? Number(db.daily_egg_collections[existingIdx].quailEggs) || 0 : 0);
@@ -2158,7 +2210,7 @@ function calculateCurrentAgeWeeks(
       quailEggs: qEggs,
       poultryRecorded: true,
       totalEggs: total,
-      recordedBy: recordedBy ? String(recordedBy).trim() : ((req as any).user?.name || "Operator"),
+      recordedBy: recordedBy ? String(recordedBy).trim() : (getAuthorizedUser(req)?.name || "Operator"),
       notes: notes ? String(notes).trim() : ""
     };
 
@@ -2176,11 +2228,12 @@ function calculateCurrentAgeWeeks(
   app.put("/api/daily_egg_collections/:id", requireAuth, (req, res) => {
     const db = loadDb();
     if (!db.daily_egg_collections) db.daily_egg_collections = [];
+    if (['brahmaEggs', 'turkeyEggs', 'quailEggs'].some(key => req.body[key] !== undefined && (!Number.isSafeInteger(Number(req.body[key])) || Number(req.body[key]) < 0))) return res.status(400).json({ error: 'Egg counts must be non-negative whole numbers.' });
     const idx = db.daily_egg_collections.findIndex((e: any) => e.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: "Egg collection record not found." });
 
     const existing = db.daily_egg_collections[idx];
-    if (req.body.quailEggs !== undefined && (!Number.isSafeInteger(Number(req.body.quailEggs)) || Number(req.body.quailEggs) < 0)) return res.status(400).json({ error: 'Quail eggs must be a non-negative whole number.' });
+    if (req.body.expected !== undefined && !eggCountsMatch(existing, req.body.expected)) return res.status(409).json({ error: 'Another family member changed this day’s egg count. Refresh and review the latest numbers.' });
     if (req.body.date && db.daily_egg_collections.some((item: any, index: number) => index !== idx && item.date === req.body.date)) return res.status(400).json({ error: 'An egg collection already exists for that date.' });
     const bEggs = req.body.brahmaEggs !== undefined ? Math.max(0, Number(req.body.brahmaEggs)) : existing.brahmaEggs;
     const tEggs = req.body.turkeyEggs !== undefined ? Math.max(0, Number(req.body.turkeyEggs)) : existing.turkeyEggs;

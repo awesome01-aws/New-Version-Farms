@@ -89,6 +89,13 @@ test('family sessions, shared records, offline rejection and durable storage', a
     assert.equal((await request(`/api/daily_egg_collections/${poultryEggs.body.record.id}`, { method: 'DELETE', headers: { Authorization: dad.body.token } })).status, 200);
     const afterPoultryDelete = await request('/api/data', { headers: { Authorization: child.body.token } });
     assert.equal(afterPoultryDelete.body.daily_egg_collections.find(item => item.date === '2026-10-01')?.quailEggs, 6);
+    const quailOnlyEggs = await post('/api/daily_egg_collections', { date: '2026-10-03', brahmaEggs: 0, turkeyEggs: 0, quailEggs: 8, expected: null }, child.body.token);
+    assert.equal(quailOnlyEggs.status, 200);
+    assert.equal(quailOnlyEggs.body.record.totalEggs, 8);
+    assert.equal((await post('/api/daily_egg_collections', { date: '2026-10-04', brahmaEggs: 1.5, turkeyEggs: 0, quailEggs: 0 }, child.body.token)).status, 400);
+    const originalEggCounts = { id: quailOnlyEggs.body.record.id, brahmaEggs: 0, turkeyEggs: 0, quailEggs: 8 };
+    assert.equal((await request(`/api/daily_egg_collections/${originalEggCounts.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: dad.body.token }, body: JSON.stringify({ date: '2026-10-03', quailEggs: 9, expected: originalEggCounts }) })).status, 200);
+    assert.equal((await request(`/api/daily_egg_collections/${originalEggCounts.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: child.body.token }, body: JSON.stringify({ date: '2026-10-03', quailEggs: 10, expected: originalEggCounts }) })).status, 409);
     assert.equal((await post('/api/farm/actions', { id: 'farm-eggs-set', kind: 'quail_egg_use', payload: { date: '2026-10-02', useKind: 'set', quantity: 2 } }, dad.body.token)).status, 200);
     const farmBatchId = 'farm-farm-eggs-set';
     assert.equal((await request(`/api/incubator/${farmBatchId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: dad.body.token }, body: JSON.stringify({ chicksHatched: 2 }) })).status, 409);
@@ -100,6 +107,16 @@ test('family sessions, shared records, offline rejection and durable storage', a
     const shared = await request('/api/data', { headers: { Authorization: child.body.token } });
     assert.equal(shared.status, 200);
     assert.ok(shared.body.flocks.some(item => item.name === 'Test hens'));
+    const allocation = await post('/api/cage_allocations', { blockName: 'BLOCK 1', cageName: 'CAGE B', flockName: 'Test hens', species: 'Chicken', quantity: 12, ageWeeks: 2, dateAdded: '2026-09-28' }, dad.body.token);
+    assert.equal(allocation.status, 200);
+    const correction = await post('/api/farm/actions', { id: 'count-family-001', kind: 'cage_count_correct', payload: { allocationId: `flock-${flock.body.id}`, expectedQuantity: 12, quantity: 10, reason: 'Two chicks were counted twice', date: '2026-10-10' } }, child.body.token);
+    assert.equal(correction.status, 200);
+    const afterCount = await request('/api/data', { headers: { Authorization: dad.body.token } });
+    assert.equal(afterCount.body.flocks.find(item => item.id === flock.body.id)?.quantity, 10);
+    assert.equal(afterCount.body.cage_allocations.find(item => item.flockName === 'Test hens')?.quantity, 10);
+    assert.equal(afterCount.body.cage_count_corrections[0].reason, 'Two chicks were counted twice');
+    assert.ok(afterCount.body.activity_log.some(item => item.actor === 'Child' && item.action === 'Corrected cage count' && item.detail.includes('12 → 10')));
+    assert.equal((await request(`/api/cage_allocations/flock-${flock.body.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: dad.body.token }, body: JSON.stringify({ quantity: 9 }) })).status, 400);
     assert.equal(shared.body.sessions, undefined);
     assert.equal((await post('/api/sync', { items: [{ id: 'x', endpoint: '/api/unsupported', method: 'POST', body: {} }] }, dad.body.token)).status, 409);
 

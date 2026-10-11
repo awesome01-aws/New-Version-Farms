@@ -179,7 +179,7 @@ export interface DailyEggCollection {
   turkeyEggs: number;
   quailEggs?: number;
   poultryRecorded?: boolean;
-  totalEggs: number; // brahmaEggs + turkeyEggs
+  totalEggs: number; // brahmaEggs + turkeyEggs + quailEggs
   recordedBy?: string;
   notes?: string;
 }
@@ -213,6 +213,8 @@ export interface RabbitSale { id: string; date: string; rabbitIds: string[]; buy
 export interface RabbitEaten { id: string; date: string; rabbitIds: string[]; notes?: string; voided?: boolean }
 export interface AnimalCareRecord { id: string; date: string; species: 'Rabbit' | 'Quail'; targetId: string; kind: 'health' | 'weight' | 'feed'; detail?: string; amount?: number; unit?: 'kg' | 'g' | 'FCFA'; notes?: string }
 export interface QuailEggUse { id: string; date: string; kind: 'sold' | 'eaten' | 'set' | 'adjustment'; quantity: number; buyerName?: string; amount?: number; incubatorId?: string; saleId?: string; notes?: string; voided?: boolean }
+export interface CageCountCorrection { id: string; date: string; allocationId: string; flockId?: string; cageName: string; flockName: string; previousQuantity: number; quantity: number; reason: string; recordedBy?: string }
+export interface FarmActivity { id: string; at: string; actor: string; action: string; detail?: string }
 
 export interface FowlEatenRecord {
   stockAction?: string;
@@ -253,6 +255,8 @@ export interface DbSchema {
   animal_care?: AnimalCareRecord[];
   quail_egg_use?: QuailEggUse[];
   farm_action_receipts?: string[];
+  cage_count_corrections?: CageCountCorrection[];
+  activity_log?: FarmActivity[];
 }
 
 export type ActiveTab = 'home' | 'farm' | 'incubator' | 'reports';

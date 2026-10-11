@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Wifi, WifiOff, RefreshCw, CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
-import { getSyncQueue, syncPendingQueue, QueuedMutation } from '../lib/offlineStore';
+import { getSyncQueue, getSyncProblem, syncPendingQueue, QueuedMutation } from '../lib/offlineStore';
 
 interface SyncStatusProps {
   token: string | null;
@@ -15,6 +15,7 @@ interface SyncStatusProps {
 export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [pendingQueue, setPendingQueue] = useState<QueuedMutation[]>(getSyncQueue());
+  const [syncProblem, setSyncProblem] = useState<string | null>(getSyncProblem());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -22,6 +23,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
   const refreshState = () => {
     setIsOnline(navigator.onLine);
     setPendingQueue(getSyncQueue());
+    setSyncProblem(getSyncProblem());
   };
 
   useEffect(() => {
@@ -42,6 +44,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
 
     const handleOfflineChange = (e: any) => {
       setPendingQueue(getSyncQueue());
+      setSyncProblem(getSyncProblem());
       if (e?.detail?.status) {
         setToastMessage(e.detail.status);
         setTimeout(() => setToastMessage(null), 4000);
@@ -78,6 +81,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
     } finally {
       setIsSyncing(false);
       setPendingQueue(getSyncQueue());
+      setSyncProblem(getSyncProblem());
     }
   };
 
@@ -110,6 +114,8 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
           className={`flex items-center gap-1 sm:gap-1.5 px-2 py-1.5 sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold transition-all border shadow-sm ${
             !isOnline
               ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+              : syncProblem
+              ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100'
               : pendingQueue.length > 0
               ? 'bg-blue-50 text-blue-800 border-blue-300 hover:bg-blue-100'
               : 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
@@ -118,28 +124,32 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
             !isOnline
               ? 'Working Offline - Click to view queued changes'
               : pendingQueue.length > 0
-              ? `${pendingQueue.length} unsynced changes - Click to view`
-              : 'Internet connected; no changes waiting on this phone'
+              ? `${pendingQueue.length} changes saved on this phone; tap to view`
+              : 'No changes waiting on this phone'
           }
         >
           {isSyncing ? (
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
           ) : !isOnline ? (
             <WifiOff className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+          ) : syncProblem ? (
+            <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
           ) : pendingQueue.length > 0 ? (
             <AlertCircle className="w-3.5 h-3.5 text-blue-600" />
           ) : (
             <Wifi className="w-3.5 h-3.5 text-emerald-600" />
           )}
 
-          <span className="hidden sm:inline">
+          <span className="inline">
             {isSyncing
               ? 'Syncing...'
               : !isOnline
-              ? `Offline (${pendingQueue.length})`
+              ? `On this phone (${pendingQueue.length})`
+              : syncProblem
+              ? 'Needs attention'
               : pendingQueue.length > 0
-              ? `${pendingQueue.length} Pending`
-              : 'Online'}
+              ? `${pendingQueue.length} to share`
+              : 'No changes waiting'}
           </span>
 
           {pendingQueue.length > 0 && (
@@ -160,7 +170,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
 
       {/* Expandable Queued Operations Drawer/Dropdown */}
       {showDetails && (
-        <div className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-xl border border-slate-200 z-50 p-4 text-xs">
+        <div className="fixed inset-x-3 top-20 sm:absolute sm:inset-auto sm:right-0 sm:top-auto mt-2 w-auto sm:w-80 max-h-[75vh] overflow-y-auto bg-white rounded-2xl shadow-xl border border-slate-200 z-50 p-4 text-xs">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
             <div className="flex items-center gap-2">
               {!isOnline ? (
@@ -188,6 +198,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
               ? 'You have offline changes queued for synchronization.'
               : 'No changes are waiting on this phone. Other family devices update through the shared server.'}
           </p>
+          {syncProblem && <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Needs attention: {syncProblem}</p>}
 
           {/* Pending Sync Queue List */}
           {pendingQueue.length > 0 ? (

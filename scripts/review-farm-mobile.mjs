@@ -56,17 +56,32 @@ try {
     await page.screenshot({ path: join(output, `${label}.png`) });
   };
   const login = async (p, username, password) => { await p.goto(base); await p.getByLabel('Username', { exact: true }).fill(username); await p.getByLabel('Password', { exact: true }).fill(password); await p.locator('#auth_submit_btn').click(); await p.getByRole('heading', { name: /Hello/ }).waitFor(); };
+  const data = async (token = dad.token) => (await fetch(base + '/api/data', { headers: { Authorization: token } })).json();
   await login(page, 'reviewdad', 'review-pass-123');
   console.log('Phone session signed in.');
   await page.getByRole('region', { name: 'Rabbit reminders' }).waitFor();
   await checkPhone('home-reminders');
   console.log('Home reminders reviewed.');
+  assert.equal(await page.getByRole('button', { name: /More tasks/ }).getAttribute('aria-expanded'), 'false');
+  await page.getByRole('button', { name: /Record eggs/ }).click();
+  const dailyEggForm = page.locator('#form_section_egg_collection');
+  await dailyEggForm.getByText('Quail Eggs').waitFor();
+  await dailyEggForm.locator('input[type="number"]').nth(0).fill('3');
+  await dailyEggForm.locator('input[type="number"]').nth(1).fill('2');
+  await dailyEggForm.locator('input[type="number"]').nth(2).fill('14');
+  await dailyEggForm.getByText('Quail Eggs').scrollIntoViewIfNeeded();
+  await checkPhone('daily-eggs-with-quail');
+  await dailyEggForm.locator('button[type="submit"]').click();
+  for (let i = 0; i < 20 && (await data()).daily_egg_collections.find(row => row.date === today)?.totalEggs !== 19; i++) await page.waitForTimeout(200);
+  assert.equal((await data()).daily_egg_collections.find(row => row.date === today)?.quailEggs, 14);
+  await page.getByRole('button', { name: 'Home', exact: true }).filter({ visible: true }).click();
+  await page.getByRole('button', { name: /Move an animal/ }).click();
+  assert.equal(await page.getByRole('region', { name: 'Rabbit and quail cages' }).getByLabel('Housing action').inputValue(), 'assign');
   const farm = async (section) => {
     const selector = page.getByLabel('Farm section', { exact: true });
     if (!await selector.isVisible()) await page.getByRole('button', { name: 'Farm', exact: true }).filter({ visible: true }).click();
     await selector.selectOption(section);
   };
-  const data = async (token = dad.token) => (await fetch(base + '/api/data', { headers: { Authorization: token } })).json();
   const save = async (form) => {
     const [response] = await Promise.all([page.waitForResponse(response => response.url().endsWith('/api/farm/actions') && response.request().method() === 'POST'), form.locator('button[type="submit"]').click()]);
     assert.equal(response.status(), 200, await response.text());
@@ -163,8 +178,25 @@ try {
   assert.equal((await reversal).status(), 200);
   assert.equal((await data()).rabbits.find(r => r.id === 'review-rabbit-sale').status, 'active');
   console.log('Shared-table reversal verified.');
+  await page.getByRole('button', { name: 'Home', exact: true }).filter({ visible: true }).click();
+  await page.getByRole('button', { name: /Correct cage count/ }).click();
+  const correctionForm = page.getByRole('heading', { name: 'Correct a cage count' }).locator('..').locator('..');
+  await correctionForm.getByLabel('Cage and flock').selectOption(`flock-${flock.id}`);
+  await correctionForm.getByLabel('Correct number alive').fill('5');
+  await correctionForm.getByLabel('Why did the count change?').fill('One chick was counted twice');
+  await checkPhone('cage-count-correction');
+  await correctionForm.getByRole('button', { name: 'Save correction' }).click();
+  for (let i = 0; i < 20 && (await data()).flocks.find(item => item.id === flock.id)?.quantity !== 5; i++) await page.waitForTimeout(200);
+  assert.equal((await data()).flocks.find(item => item.id === flock.id)?.quantity, 5);
+  assert.equal((await data(child.token)).cage_count_corrections.at(-1)?.reason, 'One chick was counted twice');
+  await page.getByRole('button', { name: 'Home', exact: true }).filter({ visible: true }).click();
+  await page.getByText('One chick was counted twice').waitFor();
+  await page.getByRole('heading', { name: 'Family activity' }).scrollIntoViewIfNeeded();
+  await checkPhone('family-activity');
+  await page.getByRole('heading', { name: 'Family activity' }).locator('..').getByRole('button', { name: 'Review' }).first().click();
+  await page.getByRole('heading', { name: 'Correct a cage count' }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(`Mobile review passed: shared sales, death, consumption, housing, age and breeding forms, two family sessions, and offline replay at 390×844. Screenshots: ${output}`);
+  console.log(`Mobile review passed: daily quail eggs, move/count shortcuts, cage correction, family activity, shared stock actions, two family sessions, and offline replay at 390×844. Screenshots: ${output}`);
 } finally {
   await browser?.close(); server.kill();
   // Keep the isolated review database and screenshots for diagnosis; no owner files are touched.

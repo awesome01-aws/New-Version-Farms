@@ -38,10 +38,12 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
   const [dismissedTasks, setDismissedTasks] = React.useState<string[]>([]);
   const [eggReminderDismissed, setEggReminderDismissed] = React.useState(false);
   const [showAllTasks, setShowAllTasks] = React.useState(false);
+  const [showMoreActions, setShowMoreActions] = React.useState(false);
   const birds = (db.flocks || []).reduce((sum, flock) => sum + (Number(flock.quantity) || 0), 0);
   const activeBatches = (db.incubator_records || []).filter(batch => batch.chicksHatched == null).length;
   const incubatingEggs = (db.incubator_records || []).filter(batch => batch.chicksHatched == null).reduce((sum, batch) => sum + (Number(batch.eggsCollected) || 0), 0);
   const eggsToday = (db.daily_egg_collections || []).find(record => record.date === today)?.totalEggs || 0;
+  const eggsLoggedToday = (db.daily_egg_collections || []).some(record => record.date === today && (record.poultryRecorded !== false || (record.quailEggs || 0) > 0));
 
   const hatcheryTasks: HatcheryTask[] = [];
   for (const record of db.incubator_records || []) {
@@ -68,7 +70,7 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     .sort((a, b) => b.record.dateBrought.localeCompare(a.record.dateBrought));
   const displayedTasks = showAllTasks ? visibleTasks : visibleTasks.slice(0, 3);
   const hourAtFarm = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(new Date()));
-  const eggReminderDue = hourAtFarm >= 18 && !(db.daily_egg_collections || []).some(record => record.date === today && record.poultryRecorded !== false) && !eggReminderDismissed;
+  const eggReminderDue = hourAtFarm >= 18 && !eggsLoggedToday && !eggReminderDismissed;
 
   const inLastSevenDays = (date: string) => {
     const recordTime = Date.parse(`${date}T00:00:00Z`);
@@ -96,11 +98,12 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     { label: 'Record a sale', help: 'Birds, meat or eggs sold', icon: ShoppingBag, tab: 'farm' as ActiveTab, key: 'sales' },
     { label: 'Add a flock', help: 'New birds on the farm', icon: Bird, tab: 'farm' as ActiveTab, key: 'flock' },
     { label: 'Add an egg batch', help: 'Start incubation for a client', icon: Plus, tab: 'incubator' as ActiveTab, key: 'batch' },
+    { label: 'Move an animal', help: 'Rabbit or quail to another cage', icon: ArrowRightLeft, tab: 'farm' as ActiveTab, key: 'animal_move' },
+    { label: 'Correct cage count', help: 'Update chicks or birds and explain why', icon: RotateCcw, tab: 'farm' as ActiveTab, key: 'cage_count' },
   ];
   const moreActions = [
     { label: 'Add rabbit', icon: Rabbit, key: 'rabbits' },
     { label: 'Add quail', icon: Egg, key: 'quail_flock_add' },
-    { label: 'Transfer birds', icon: ArrowRightLeft, key: 'transfer' },
     { label: 'Feed', icon: Package, key: 'feed' },
     { label: 'Expenses', icon: Receipt, key: 'expense' },
     { label: 'Animal loss', icon: HeartPulse, key: 'mortality' },
@@ -112,9 +115,9 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
       <p className="text-emerald-200 text-sm font-medium">New Vision Farms · {new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeZone: 'Africa/Douala' }).format(new Date())}</p>
       <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mt-2">Hello{currentUserName ? `, ${currentUserName.split(' ')[0]}` : ''}</h1>
       <p className="text-emerald-100 mt-2 max-w-xl">What would you like to do on the farm today?</p>
-      <button type="button" onClick={() => open('farm', birds === 0 ? 'flock' : 'egg_collection')}
+      <button type="button" onClick={() => birds > 0 && !eggsLoggedToday ? open('farm', 'egg_collection') : visibleTasks.length ? onOpenEditRecord(visibleTasks[0].record) : rabbitTasks.length ? open('farm', 'rabbits') : birds === 0 ? open('farm', 'flock') : open('farm')}
         className="mt-6 w-full sm:w-auto min-h-14 px-5 rounded-2xl bg-white text-emerald-900 font-bold text-base flex items-center justify-center gap-3 hover:bg-emerald-50 focus-visible:outline focus-visible:outline-4 focus-visible:outline-emerald-300">
-        {birds === 0 ? 'Add your first flock' : 'Record today’s eggs'} <ArrowRight size={20} />
+        {birds > 0 && !eggsLoggedToday ? 'Record today’s eggs' : visibleTasks.length ? `Next: ${visibleTasks[0].title}` : rabbitTasks.length ? `Next: ${rabbitTasks[0].title}` : birds === 0 ? 'Add your first flock' : 'View farm records'} <ArrowRight size={20} />
       </button>
     </section>
 
@@ -141,7 +144,7 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
         {dismissedTasks.length > 0 && <button type="button" onClick={() => setDismissedTasks([])} className="min-h-11 shrink-0 px-2 text-sm font-semibold text-emerald-800 flex items-center gap-1"><RotateCcw size={16} /> Restore</button>}
       </div>
       {eggReminderDue && <div className="rounded-2xl bg-white border border-amber-200 p-3 flex items-center gap-2">
-        <button type="button" onClick={() => open('farm', 'egg_collection')} className="min-h-12 flex-1 text-left"><strong className="block text-sm text-slate-900">Today's egg count is still missing</strong><span className="text-xs text-slate-600">Record Brahma and Turkey eggs collected today.</span></button>
+        <button type="button" onClick={() => open('farm', 'egg_collection')} className="min-h-12 flex-1 text-left"><strong className="block text-sm text-slate-900">Today's egg count is still missing</strong><span className="text-xs text-slate-600">Record chicken, turkey and quail eggs collected today.</span></button>
         <button type="button" onClick={() => setEggReminderDismissed(true)} aria-label="Dismiss egg collection reminder" className="min-h-11 min-w-11 flex items-center justify-center text-slate-500"><X size={18} /></button>
       </div>}
       {displayedTasks.map(task => <div key={task.id} className="rounded-2xl bg-white border border-amber-200 p-3 flex items-center gap-2">
@@ -164,7 +167,8 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
     </section>
 
     <section aria-labelledby="more-actions-heading">
-      <h2 id="more-actions-heading" className="text-xl font-bold text-emerald-950 mb-3">More tasks</h2>
+      <button type="button" aria-expanded={showMoreActions} onClick={() => setShowMoreActions(value => !value)} className="mb-3 min-h-12 w-full rounded-2xl border border-emerald-200 bg-emerald-50 px-4 text-left text-lg font-bold text-emerald-950 flex items-center justify-between"><span id="more-actions-heading">More tasks</span><span className="text-sm">{showMoreActions ? 'Hide −' : 'Show +'}</span></button>
+      {showMoreActions && <>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {moreActions.map(action => <button key={action.label} type="button" onClick={() => open('farm', action.key)}
           className="min-h-20 bg-white border border-emerald-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-2 font-semibold text-slate-800 hover:border-emerald-400 focus-visible:outline focus-visible:outline-4 focus-visible:outline-emerald-300">
@@ -175,6 +179,13 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
         <button type="button" onClick={() => open('incubator', 'client')} className="min-h-14 bg-emerald-50 text-emerald-900 border border-emerald-100 rounded-2xl px-4 font-semibold flex items-center gap-3"><Users size={20}/> Clients <ArrowRight size={16} className="ml-auto" /></button>
         <button type="button" onClick={() => open('reports')} className="min-h-14 bg-emerald-50 text-emerald-900 border border-emerald-100 rounded-2xl px-4 font-semibold flex items-center gap-3"><BarChart3 size={20}/> Reports <ArrowRight size={16} className="ml-auto" /></button>
       </div>
+      </>}
+    </section>
+
+    <section aria-labelledby="family-activity-heading" className="rounded-2xl border border-emerald-100 bg-white p-4 sm:p-5">
+      <h2 id="family-activity-heading" className="text-xl font-bold text-emerald-950">Family activity</h2>
+      <p className="mt-1 text-sm text-slate-600">Recent changes saved for everyone. Open the relevant record to correct a mistake.</p>
+      {(db.activity_log || []).length ? <ol className="mt-3 divide-y divide-emerald-100">{(db.activity_log || []).slice(0, 6).map(item => <li key={item.id} className="py-3 text-sm flex items-start gap-2"><div className="min-w-0 flex-1"><strong className="text-slate-900">{item.actor}</strong> <span className="text-slate-700">{item.action.toLowerCase()}</span>{item.detail && <span className="block text-slate-600">{item.detail}</span>}<time className="block text-xs text-slate-500 mt-1" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time></div><button type="button" onClick={() => open(item.action.includes('incubator') || item.action.includes('client') ? 'incubator' : 'farm', item.action.includes('egg') ? 'egg_collection' : item.action.includes('cage') ? 'cage_count' : item.action.includes('sale') ? 'sales' : undefined)} className="min-h-11 rounded-xl border border-emerald-200 px-3 text-sm font-semibold text-emerald-900">Review</button></li>)}</ol> : <p className="mt-3 text-sm text-slate-500">New shared changes will appear here.</p>}
     </section>
 
     <section aria-labelledby="weekly-snapshot-heading">

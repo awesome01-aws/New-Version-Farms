@@ -311,8 +311,24 @@ export default function PoultryMod({
         setActiveFormSection('quail_flock_add');
         setFarmSubSection('quail');
       } else if (quickFormKey === 'egg_collection' || quickFormKey === 'egg') {
+        const todayEggs = rawData.daily_egg_collections?.find(row => row.date === getCameroonTodayISO());
+        if (todayEggs) {
+          setEditingEggColl(todayEggs);
+          setEggFormDate(todayEggs.date);
+          setEggFormBrahma(String(todayEggs.brahmaEggs || 0));
+          setEggFormTurkey(String(todayEggs.turkeyEggs || 0));
+          setEggFormQuail(String(todayEggs.quailEggs || 0));
+          setEggFormRecordedBy(todayEggs.recordedBy || '');
+          setEggFormNotes(todayEggs.notes || '');
+        }
         setIsEggCollFormOpen(true);
         setFarmSubSection('eggs');
+      } else if (quickFormKey === 'animal_move') {
+        setHousingRequest(previous => ({ ...previous, version: previous.version + 1, task: 'assign' }));
+        setFarmSubSection('flocks');
+      } else if (quickFormKey === 'cage_count') {
+        setCorrectionModalOpen(true);
+        setFarmSubSection('flocks');
       } else if (quickFormKey === 'flock' || quickFormKey === 'transfer') {
         setActiveFormSection(quickFormKey);
         setFarmSubSection('flocks');
@@ -334,11 +350,11 @@ export default function PoultryMod({
       } else {
         setActiveFormSection(quickFormKey);
       }
-      const keyToScroll = quickFormKey === 'sale' ? 'sales' : quickFormKey === 'eaten' ? 'fowls_eaten' : quickFormKey;
+      const keyToScroll = quickFormKey === 'animal_move' ? 'section_animal_housing' : quickFormKey === 'cage_count' ? 'section_flocks' : quickFormKey === 'sale' ? 'sales' : quickFormKey === 'eaten' ? 'fowls_eaten' : quickFormKey;
       setQuickFormKey(null);
 
       setTimeout(() => {
-        const el = document.getElementById(`${keyToScroll}-form-section`) || 
+        const el = document.getElementById(keyToScroll) || document.getElementById(`${keyToScroll}-form-section`) ||
                    document.getElementById(`form_section_${keyToScroll}`) || 
                    document.getElementById(`qa_log_${keyToScroll}`);
         if (el) {
@@ -540,6 +556,10 @@ export default function PoultryMod({
 
   // Allocation editing
   const [editingAlloc, setEditingAlloc] = useState<CageAllocation | null>(null);
+  const [correctionModalOpen, setCorrectionModalOpen] = useState(false);
+  const [correctionAllocationId, setCorrectionAllocationId] = useState('');
+  const [correctionQuantity, setCorrectionQuantity] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
   const [editAllocForm, setEditAllocForm] = useState<Partial<CageAllocation>>({});
 
   // Direct Add Allocation Modal
@@ -666,6 +686,21 @@ export default function PoultryMod({
 
     return list;
   }, [data.flocks, data.cage_allocations, data.rabbits, data.rabbit_hutches, allFarmCages]);
+  const correctionAllocation = liveAllocations.find(item => item.id === correctionAllocationId);
+  const openCountCorrection = (allocation?: CageAllocation) => {
+    setCorrectionAllocationId(allocation?.id || '');
+    setCorrectionQuantity(allocation ? String(allocation.quantity) : '');
+    setCorrectionReason('');
+    setCorrectionModalOpen(true);
+  };
+  const saveCountCorrection = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!correctionAllocation) return;
+    if (await farmAction.run('cage_count_correct', { allocationId: correctionAllocation.id, expectedQuantity: correctionAllocation.quantity, quantity: Number(correctionQuantity), reason: correctionReason, date: getCameroonTodayISO() })) {
+      setCorrectionModalOpen(false);
+      setCorrectionReason('');
+    }
+  };
 
   // Map of cage name (uppercase) -> array of allocations in that cage for multi-batch detection
   const cageOccupancyMap = React.useMemo(() => {
@@ -847,6 +882,7 @@ export default function PoultryMod({
   const [eggFormDate, setEggFormDate] = useState(getCameroonTodayISO());
   const [eggFormBrahma, setEggFormBrahma] = useState('');
   const [eggFormTurkey, setEggFormTurkey] = useState('');
+  const [eggFormQuail, setEggFormQuail] = useState('');
   const [eggFormRecordedBy, setEggFormRecordedBy] = useState('');
   const [eggFormNotes, setEggFormNotes] = useState('');
   const [eggSearch, setEggSearch] = useState('');
@@ -864,7 +900,9 @@ export default function PoultryMod({
         date: eggFormDate || getCameroonTodayISO(),
         brahmaEggs: Math.max(0, Number(eggFormBrahma) || 0),
         turkeyEggs: Math.max(0, Number(eggFormTurkey) || 0),
-        recordedBy: eggFormRecordedBy || 'Operator',
+        quailEggs: Math.max(0, Number(eggFormQuail) || 0),
+        expected: editingEggColl ? { id: editingEggColl.id, brahmaEggs: editingEggColl.brahmaEggs || 0, turkeyEggs: editingEggColl.turkeyEggs || 0, quailEggs: editingEggColl.quailEggs || 0 } : null,
+        recordedBy: eggFormRecordedBy || undefined,
         notes: eggFormNotes
       };
 
@@ -887,9 +925,10 @@ export default function PoultryMod({
         throw new Error(resData.error || 'Failed to save egg collection log.');
       }
 
-      setSuccessMsg(`Egg collection for ${payload.date} saved. Total across Brahma, Turkey and Quail: ${resData.record?.totalEggs ?? payload.brahmaEggs + payload.turkeyEggs}.`);
+      setSuccessMsg(res.status === 202 ? `Egg collection for ${payload.date} saved on this phone. It will be shared when connected.` : `Egg collection for ${payload.date} shared with the family. Total: ${resData.record?.totalEggs ?? payload.brahmaEggs + payload.turkeyEggs + payload.quailEggs}.`);
       setEggFormBrahma('');
       setEggFormTurkey('');
+      setEggFormQuail('');
       setEggFormNotes('');
       setEggFormRecordedBy('');
       setEditingEggColl(null);
@@ -928,6 +967,7 @@ export default function PoultryMod({
     setEggFormDate(rec.date);
     setEggFormBrahma(String(rec.brahmaEggs));
     setEggFormTurkey(String(rec.turkeyEggs));
+    setEggFormQuail(String(rec.quailEggs || 0));
     setEggFormRecordedBy(rec.recordedBy || '');
     setEggFormNotes(rec.notes || '');
     setIsEggCollFormOpen(true);
@@ -2309,6 +2349,7 @@ export default function PoultryMod({
       {/* SECTION 1: FLOCKS */}
       <div id="section_flocks" hidden={farmSubSection !== 'all' && farmSubSection !== 'flocks'} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
         <SharedAnimalHousing key={housingRequest.version} data={rawData} token={token} refresh={triggerRefresh} initialTask={housingRequest.task} initialAnimalType={housingRequest.animalType} />
+        <button type="button" onClick={() => openCountCorrection()} className="mb-5 min-h-12 w-full rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-left text-sm font-bold text-emerald-900">Correct chicks or birds in a cage →</button>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
             <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">Bird flocks & cages</h3>
@@ -3195,6 +3236,12 @@ export default function PoultryMod({
                                 <div className="flex items-center justify-center gap-1.5">
                                   <button
                                     type="button"
+                                    onClick={() => { openCountCorrection(a); setFullscreenTable(null); }}
+                                    className="min-h-11 rounded-lg bg-emerald-50 px-2 text-xs font-bold text-emerald-900"
+                                    aria-label={`Correct count for ${a.flockName} in ${a.cageName}`}
+                                  >Count</button>
+                                  <button
+                                    type="button"
                                     onClick={() => {
                                       setEditingAlloc(a);
                                       setEditAllocForm({ ...a });
@@ -3382,6 +3429,12 @@ export default function PoultryMod({
                           </td>
                           <td className="p-3 text-center">
                             <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => openCountCorrection(a)}
+                                className="min-h-11 rounded-lg bg-emerald-50 px-2 text-xs font-bold text-emerald-900"
+                                aria-label={`Correct count for ${a.flockName} in ${a.cageName}`}
+                              >Count</button>
                               <button
                                 type="button"
                                 onClick={() => {
@@ -3757,7 +3810,7 @@ export default function PoultryMod({
                 </span>
               </div>
               <p className="text-slate-400 text-xs font-semibold mt-0.5">
-                Record daily egg yields for Brahma (Chicken) and Turkey flocks with automated 6 PM reminders
+                Record chicken, turkey and quail eggs in one daily log.
               </p>
             </div>
           </div>
@@ -3765,12 +3818,14 @@ export default function PoultryMod({
           <button
             type="button"
             onClick={() => {
-              setEditingEggColl(null);
+              const todayEggs = rawData.daily_egg_collections?.find(row => row.date === getCameroonTodayISO());
+              setEditingEggColl(todayEggs || null);
               setEggFormDate(getCameroonTodayISO());
-              setEggFormBrahma('');
-              setEggFormTurkey('');
-              setEggFormNotes('');
-              setEggFormRecordedBy('');
+              setEggFormBrahma(todayEggs ? String(todayEggs.brahmaEggs || 0) : '');
+              setEggFormTurkey(todayEggs ? String(todayEggs.turkeyEggs || 0) : '');
+              setEggFormQuail(todayEggs ? String(todayEggs.quailEggs || 0) : '');
+              setEggFormNotes(todayEggs?.notes || '');
+              setEggFormRecordedBy(todayEggs?.recordedBy || '');
               setIsEggCollFormOpen(!isEggCollFormOpen);
             }}
             className="px-4 py-2 bg-amber-600 text-white rounded-xl text-xs font-black uppercase flex items-center gap-2 hover:bg-amber-700 transition-colors shadow cursor-pointer self-start sm:self-auto"
@@ -3780,8 +3835,9 @@ export default function PoultryMod({
           </button>
         </div>
 
-        {/* 2 Species Sections / Yield Metric Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+        {/* Daily yield by species */}
+        {!isEggCollFormOpen && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
           {/* Brahma Section */}
           <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/60 flex items-center justify-between">
             <div>
@@ -3823,6 +3879,10 @@ export default function PoultryMod({
           </div>
 
           {/* Combined Total */}
+          <div className="p-4 bg-sky-50/50 rounded-2xl border border-sky-200/60 flex items-center justify-between">
+            <div><div className="text-xs font-extrabold text-sky-900 uppercase">🐦 Quail Eggs</div><div className="text-2xl font-black text-slate-900 mt-1 font-mono">{(data.daily_egg_collections || []).reduce((sum, row) => sum + (row.quailEggs || 0), 0).toLocaleString()} <span className="text-xs text-slate-500">eggs total</span></div></div>
+            <div className="text-right"><span className="text-[10px] font-bold text-slate-400 block uppercase">Today’s Quail</span><span className="text-sm font-black text-sky-800">{(data.daily_egg_collections || []).find(row => row.date === getCameroonTodayISO())?.quailEggs || 0} eggs</span></div>
+          </div>
           <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 flex items-center justify-between">
             <div>
               <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900 uppercase tracking-wider">
@@ -3842,6 +3902,7 @@ export default function PoultryMod({
             </div>
           </div>
         </div>
+        )}
 
         {/* Collapsible Input Form */}
         {isEggCollFormOpen && (
@@ -3851,11 +3912,11 @@ export default function PoultryMod({
                 <span>{editingEggColl ? '✏️ Edit Daily Egg Collection Log' : '🥚 Record Today\'s Egg Collection'}</span>
               </h4>
               <span className="text-xs font-extrabold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">
-                6 PM Daily Audit Form
+                One daily log
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 ml-1">Collection Date</label>
                 <input
@@ -3871,7 +3932,6 @@ export default function PoultryMod({
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 ml-1 flex items-center justify-between">
                   <span>🐔 Brahma Eggs</span>
-                  <span className="text-[10px] text-amber-700 font-extrabold">Section 1</span>
                 </label>
                 <input
                   type="number"
@@ -3880,7 +3940,6 @@ export default function PoultryMod({
                   value={eggFormBrahma}
                   onChange={(e) => setEggFormBrahma(e.target.value)}
                   className="w-full text-xs font-bold p-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"
-                  required
                 />
               </div>
 
@@ -3888,7 +3947,6 @@ export default function PoultryMod({
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 ml-1 flex items-center justify-between">
                   <span>🦃 Turkey Eggs</span>
-                  <span className="text-[10px] text-orange-700 font-extrabold">Section 2</span>
                 </label>
                 <input
                   type="number"
@@ -3897,15 +3955,19 @@ export default function PoultryMod({
                   value={eggFormTurkey}
                   onChange={(e) => setEggFormTurkey(e.target.value)}
                   className="w-full text-xs font-bold p-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none"
-                  required
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 ml-1">🐦 Quail Eggs</label>
+                <input type="number" inputMode="numeric" min="0" step="1" placeholder="e.g. 24" value={eggFormQuail} onChange={event => setEggFormQuail(event.target.value)} className="w-full text-base font-bold p-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none" />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 ml-1">Recorded By</label>
                 <input
                   type="text"
-                  placeholder="Operator name"
+                  placeholder="Uses your account name if blank"
                   value={eggFormRecordedBy}
                   onChange={(e) => setEggFormRecordedBy(e.target.value)}
                   className="w-full text-xs font-bold p-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"
@@ -3926,7 +3988,7 @@ export default function PoultryMod({
 
             <div className="flex items-center justify-between pt-2">
               <div className="text-xs font-extrabold text-slate-600 font-mono">
-                Calculated Total Eggs: <span className="text-amber-600 text-sm">{ (Number(eggFormBrahma) || 0) + (Number(eggFormTurkey) || 0) }</span>
+                Calculated Total Eggs: <span className="text-amber-600 text-sm">{ (Number(eggFormBrahma) || 0) + (Number(eggFormTurkey) || 0) + (Number(eggFormQuail) || 0) }</span>
               </div>
               <div className="flex gap-2">
                 <button
@@ -5807,6 +5869,18 @@ export default function PoultryMod({
         </div>
       )}
 
+      {correctionModalOpen && <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4 flex items-center justify-center">
+        <form onSubmit={saveCountCorrection} className="w-full max-w-md space-y-4 rounded-3xl bg-white p-5 shadow-xl">
+          <div><h3 className="text-xl font-bold text-emerald-950">Correct a cage count</h3><p className="text-sm text-slate-600">Count the live chicks or birds in this cage. Your reason will appear in family activity.</p></div>
+          <label className="block text-sm font-semibold text-slate-800">Cage and flock<select required value={correctionAllocationId} onChange={event => { const row = liveAllocations.find(item => item.id === event.target.value); setCorrectionAllocationId(event.target.value); setCorrectionQuantity(row ? String(row.quantity) : ''); }} className="mt-1 min-h-12 w-full rounded-xl border border-emerald-200 bg-white px-3 text-base"><option value="">Choose a cage…</option>{liveAllocations.filter(item => item.species !== 'Rabbit').map(item => <option key={item.id} value={item.id}>{item.cageName} · {item.flockName} · {item.quantity} live</option>)}</select></label>
+          {correctionAllocation && <p className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">Current count: <strong>{correctionAllocation.quantity}</strong></p>}
+          <label className="block text-sm font-semibold text-slate-800">Correct number alive<input required type="number" inputMode="numeric" min="0" step="1" value={correctionQuantity} onChange={event => setCorrectionQuantity(event.target.value)} className="mt-1 min-h-12 w-full rounded-xl border border-emerald-200 px-3 text-base" /></label>
+          <label className="block text-sm font-semibold text-slate-800">Why did the count change?<textarea required minLength={5} maxLength={160} value={correctionReason} onChange={event => setCorrectionReason(event.target.value)} placeholder="For example: counted 2 fewer chicks during cage check" className="mt-1 min-h-24 w-full rounded-xl border border-emerald-200 p-3 text-base" /></label>
+          {farmAction.error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{farmAction.error}</p>}
+          <div className="flex gap-2"><button type="button" onClick={() => setCorrectionModalOpen(false)} className="min-h-12 flex-1 rounded-xl border border-slate-200 px-3 font-semibold">Cancel</button><button type="submit" disabled={farmAction.busy} className="min-h-12 flex-1 rounded-xl bg-emerald-700 px-3 font-semibold text-white disabled:opacity-50">{farmAction.busy ? 'Saving…' : 'Save correction'}</button></div>
+        </form>
+      </div>}
+
       {/* EDIT CAGE ALLOCATION MODAL */}
       {editingAlloc && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -5899,14 +5973,13 @@ export default function PoultryMod({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Fowl Quantity</label>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Fowl Quantity (use Correct count)</label>
                   <input
                     type="number"
                     min="1"
                     value={editAllocForm.quantity || ''}
-                    onChange={(e) => setEditAllocForm({ ...editAllocForm, quantity: Number(e.target.value) })}
+                    readOnly
                     className="w-full text-xs font-bold p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500"
-                    required
                   />
                 </div>
                 <div>

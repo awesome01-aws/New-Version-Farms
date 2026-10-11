@@ -77,6 +77,22 @@ test('quail eggs, farm-owned hatches, and sales adjust stock once without mixing
   assert.throws(() => apply(structuredClone(db), 'bad-sale1', 'quail_live_sale', { flockId: 'quail-flock', quantity: 99, amount: 1, buyerName: 'Buyer', date: '2026-10-03' }), /Not enough/);
 });
 
+test('cage count correction changes live flock and housing once, and requires a reason and current count', () => {
+  const db = emptyFarm();
+  db.cage_allocations.push({ id: 'flock-quail-flock', blockName: 'BLOCK Q', cageName: 'Q1', flockName: 'Breeders', species: 'Quail', quantity: 5, ageWeeks: 9, dateAdded: '2026-09-01', dateTransferred: '2026-09-01' });
+  const payload = { allocationId: 'flock-quail-flock', expectedQuantity: 5, quantity: 7, reason: 'Two birds missed during the first count', date: '2026-10-10' };
+  const saved = apply(db, 'correct-001', 'cage_count_correct', payload);
+  assert.equal(saved.previousQuantity, 5);
+  assert.equal(db.flocks[0].quantity, 7);
+  assert.equal(db.cage_allocations[0].quantity, 7);
+  assert.equal(db.cage_count_corrections[0].reason, payload.reason);
+  assert.deepEqual(apply(db, 'correct-001', 'cage_count_correct', payload), { alreadySaved: true });
+  assert.equal(db.cage_count_corrections.length, 1);
+  assert.throws(() => apply(db, 'correct-002', 'cage_count_correct', { ...payload, quantity: 8 }), /changed on another device/);
+  assert.throws(() => apply(db, 'correct-003', 'cage_count_correct', { ...payload, expectedQuantity: 7, quantity: 8, reason: 'No' }), /at least 5/);
+  assert.equal(db.flocks[0].quantity, 7);
+});
+
 test('rabbit and quail actions stay in the phone queue until the shared server acknowledges them', async () => {
   const storage = new Map();
   let serverAccepts = false;
@@ -107,4 +123,13 @@ test('rabbit and quail actions stay in the phone queue until the shared server a
   assert.equal((await syncPendingQueue('family-token')).syncedCount, 1);
   assert.equal(getSyncQueue().length, 0);
   assert.equal(requests.filter(item => item.path === '/api/farm/actions').length, 2);
+  const correction = executeLocalMutation('/api/farm/actions', 'POST', { id: 'offline-count', kind: 'cage_count_correct', payload: { allocationId: 'flock-quail-flock', expectedQuantity: 5, quantity: 7, reason: 'Two birds missed at first count', date: '2026-10-10' } });
+  assert.equal(correction.offlineQueued, true);
+  assert.equal(getOfflineDb().flocks[0].quantity, 7);
+  assert.equal((await syncPendingQueue('family-token')).syncedCount, 1);
+  const eggs = executeLocalMutation('/api/daily_egg_collections', 'POST', { date: '2026-10-10', brahmaEggs: 0, turkeyEggs: 0, quailEggs: 8, expected: null });
+  assert.equal(eggs.offlineQueued, true);
+  assert.equal(getOfflineDb().daily_egg_collections.find(row => row.date === '2026-10-10').totalEggs, 8);
+  assert.equal((await syncPendingQueue('family-token')).syncedCount, 1);
+  assert.equal(getSyncQueue().length, 0);
 });

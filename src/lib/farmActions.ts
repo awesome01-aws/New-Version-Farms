@@ -51,7 +51,7 @@ function addDays(day: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 export function ensureFarmArrays(db: FarmDb): void {
-  for (const key of ['rabbits', 'rabbit_hutches', 'rabbit_breedings', 'rabbit_litters', 'rabbit_moves', 'rabbit_losses', 'rabbit_sales', 'rabbit_eaten', 'fowls_eaten', 'animal_care', 'quail_egg_use', 'farm_action_receipts', 'daily_egg_collections', 'flocks', 'poultry_sales', 'incubator_records', 'cage_allocations', 'cage_transfers'] as const) {
+  for (const key of ['rabbits', 'rabbit_hutches', 'rabbit_breedings', 'rabbit_litters', 'rabbit_moves', 'rabbit_losses', 'rabbit_sales', 'rabbit_eaten', 'fowls_eaten', 'animal_care', 'quail_egg_use', 'farm_action_receipts', 'daily_egg_collections', 'flocks', 'poultry_sales', 'incubator_records', 'cage_allocations', 'cage_transfers', 'cage_count_corrections'] as const) {
     if (!Array.isArray(db[key])) (db as Record<string, unknown>)[key] = [];
   }
 }
@@ -127,6 +127,29 @@ export function applyFarmAction(db: FarmDb, action: FarmAction): unknown {
 
 function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unknown>, id: string): unknown {
   switch (action.kind) {
+    case 'cage_count_correct': {
+      const allocationId = text(p.allocationId, 'Cage row');
+      if (allocationId.startsWith('rabbit-housing-')) fail('Rabbit counts come from individual live rabbits. Record a rabbit birth, sale, use or loss instead.');
+      const flockId = allocationId.startsWith('flock-') ? allocationId.slice(6) : undefined;
+      const namedAllocation = db.cage_allocations!.find(item => item.id === allocationId);
+      const flock = flockId ? db.flocks.find(item => item.id === flockId) : db.flocks.find(item => namedAllocation && item.name === namedAllocation.flockName);
+      const allocation = namedAllocation || db.cage_allocations!.find(item => flock && item.flockName === flock.name);
+      if (!allocation && !flock) fail('This cage row no longer exists. Refresh and try again.');
+      const previousQuantity = flock ? flock.quantity : allocation!.quantity;
+      const expectedQuantity = count(p.expectedQuantity, 'Previous count', true);
+      if (previousQuantity !== expectedQuantity) fail('The count changed on another device. Refresh and check the cage again.');
+      const quantity = count(p.quantity, 'Correct count', true);
+      if (quantity === previousQuantity) fail('Enter a different count.');
+      const reason = text(p.reason, 'Reason');
+      if (reason.length < 5) fail('Please describe why the count changed (at least 5 characters).');
+      if (allocation?.countMode === 'sex_breakdown' || allocation?.countMode === 'multi_species' || (allocation?.cocksCount || 0) + (allocation?.hensCount || 0) > 0 || (allocation?.speciesBreakdown || []).length > 0) fail('This row has a detailed count breakdown. Edit its flock breakdown first.');
+      if (flock?.countMode === 'sex_breakdown' || flock?.countMode === 'multi_species' || (flock?.cocksCount || 0) + (flock?.hensCount || 0) > 0 || (flock?.speciesBreakdown || []).length > 0) fail('This flock has a detailed count breakdown. Edit its flock breakdown first.');
+      if (flock) flock.quantity = quantity;
+      if (allocation) allocation.quantity = quantity;
+      const correction = { id, date: date(p.date), allocationId, flockId: flock?.id, cageName: allocation?.cageName || flock?.notes || 'Unassigned', flockName: flock?.name || allocation!.flockName, previousQuantity, quantity, reason };
+      db.cage_count_corrections!.push(correction);
+      return correction;
+    }
     case 'farm_cage_add': {
       const animalType = text(p.animalType, 'Animal type');
       if (!['Rabbit', 'Quail', 'Poultry'].includes(animalType)) fail('Choose an animal type.');
