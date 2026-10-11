@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { ActiveTab, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Expense, CageTransfer, DailyEggCollection, FowlEatenRecord } from './types';
-import Login from './components/Login';
 import { getCameroonTodayISO } from './utils/dateUtils';
 import Navbar from './components/Navbar';
 import HomeDashboard from './components/HomeDashboard';
@@ -21,12 +20,15 @@ const GlobalSearchModal = React.lazy(() => import('./components/GlobalSearchModa
 import Footer from './components/Footer';
 
 export default function App() {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('nvf_operator_token'));
-  const [currentUser, setCurrentUser] = useState<{ id: string; username: string; name: string } | null>(
-    localStorage.getItem('nvf_operator_user') 
-      ? JSON.parse(localStorage.getItem('nvf_operator_user')!) 
-      : null
-  );
+  const token = 'open-access-operator';
+  const currentUser = { id: 'operator', username: 'operator', name: 'Farm member' };
+
+  useEffect(() => {
+    // The phone queue still expects an operator token, but the server no longer
+    // treats this public-mode marker as a secret or a family login.
+    localStorage.setItem('nvf_operator_token', token);
+    localStorage.removeItem('nvf_operator_user');
+  }, []);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
   const [isLoading, setIsLoading] = useState(false);
@@ -145,15 +147,7 @@ export default function App() {
         return;
       }
 
-      if (res.status === 401) {
-        // Clear session on unauthorized
-        localStorage.removeItem('nvf_operator_token');
-        localStorage.removeItem('nvf_operator_user');
-        setToken(null);
-        setCurrentUser(null);
-        setActiveTab('home');
-        throw new Error('Authorized login session expired.');
-      }
+      if (res.status === 401) throw new Error('This server still requires sign-in. Refresh after the updated server is deployed.');
       if (!res.ok) {
         throw new Error('Failed to retrieve database contents.');
       }
@@ -176,28 +170,8 @@ export default function App() {
     }
   }, []);
 
-  // Handle Login success
-  const handleLoginSuccess = (sessionToken: string, userPayload: { id: string; username: string; name: string }) => {
-    localStorage.setItem('nvf_operator_token', sessionToken);
-    localStorage.setItem('nvf_operator_user', JSON.stringify(userPayload));
-    setToken(sessionToken);
-    setCurrentUser(userPayload);
-  };
-
-  // Handle Logout
-  const handleLogout = () => {
-    if (token) fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: token } }).catch(() => {});
-    localStorage.removeItem('nvf_operator_token');
-    localStorage.removeItem('nvf_operator_user');
-    setToken(null);
-    setCurrentUser(null);
-    setActiveTab('home');
-  };
-
-  // Trigger sync on token changes, setup active auto-polling background safety
+  // Trigger sync on load, setup active auto-polling background safety
   useEffect(() => {
-    if (!token) return;
-
     // Initial load - user visible loader is good for initial load
     syncDatabase(token);
 
@@ -244,10 +218,6 @@ export default function App() {
     setQuickFormKey(formKey);
   };
 
-  if (!token) {
-    return <Login onLoginSuccess={handleLoginSuccess} />;
-  }
-
   return (
     <div id="app_root" className="min-h-screen bg-slate-50 flex flex-col antialiased">
       {/* Brand Header */}
@@ -255,7 +225,6 @@ export default function App() {
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
         currentUser={currentUser} 
-        onLogout={handleLogout} 
         unreadNotificationsCount={activeRemindersCount}
         onOpenNotifications={() => setIsNotificationHubOpen(true)}
         onOpenExcelImport={() => setIsExcelImportOpen(true)}

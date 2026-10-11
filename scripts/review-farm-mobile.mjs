@@ -31,10 +31,9 @@ try {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(ready, 'Review server must start');
-  await post('/api/auth/register', { username: 'reviewdad', name: 'Review Dad', password: 'review-pass-123' });
-  const dad = await post('/api/auth/login', { username: 'reviewdad', password: 'review-pass-123' });
-  await post('/api/auth/register', { username: 'reviewchild', name: 'Review Child', password: 'review-pass-456' }, dad.token);
-  const child = await post('/api/auth/login', { username: 'reviewchild', password: 'review-pass-456' });
+  assert.equal((await (await fetch(base + '/api/auth/status')).json()).authDisabled, true);
+  const dad = { token: 'open-access-operator' };
+  const child = { token: 'open-access-operator' };
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const day = offset => new Date(Date.parse(`${today}T00:00:00Z`) + offset * 86400000).toISOString().slice(0, 10);
   let seq = 0;
@@ -55,10 +54,10 @@ try {
     assert.equal(overflow, false, `${label} must fit the phone width`);
     await page.screenshot({ path: join(output, `${label}.png`) });
   };
-  const login = async (p, username, password) => { await p.goto(base); await p.getByLabel('Username', { exact: true }).fill(username); await p.getByLabel('Password', { exact: true }).fill(password); await p.locator('#auth_submit_btn').click(); await p.getByRole('heading', { name: /Hello/ }).waitFor(); };
+  const openFarm = async p => { await p.goto(base); await p.getByRole('heading', { name: /Hello/ }).waitFor(); assert.equal(await p.getByLabel('Username', { exact: true }).count(), 0); };
   const data = async (token = dad.token) => (await fetch(base + '/api/data', { headers: { Authorization: token } })).json();
-  await login(page, 'reviewdad', 'review-pass-123');
-  console.log('Phone session signed in.');
+  await openFarm(page);
+  console.log('Phone opens directly without sign-in.');
   await page.getByRole('region', { name: 'Rabbit reminders' }).waitFor();
   await checkPhone('home-reminders');
   console.log('Home reminders reviewed.');
@@ -153,7 +152,7 @@ try {
   await page.getByLabel('Rabbit task').selectOption('rabbit_litter'); await checkPhone('rabbit-litter-form');
   await farm('quail'); await page.getByLabel('Quail task').selectOption('quail_eaten'); await checkPhone('quail-household-form');
   const childContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' });
-  const childPage = await childContext.newPage(); await login(childPage, 'reviewchild', 'review-pass-456');
+  const childPage = await childContext.newPage(); await openFarm(childPage);
   await childPage.getByRole('button', { name: 'Farm', exact: true }).filter({ visible: true }).click();
   await childPage.getByLabel('Farm section', { exact: true }).selectOption('flocks');
   await childPage.getByRole('region', { name: 'Rabbit and quail cages' }).getByText('Family quail · 7 quail', { exact: true }).waitFor();

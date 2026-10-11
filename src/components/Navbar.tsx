@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Home, Egg, Users, BarChart3, LogOut, Heart, Bell, Search, Menu, UserPlus, X } from 'lucide-react';
+import { Home, Egg, BarChart3, Heart, Bell, Search, Menu, X, FileSpreadsheet } from 'lucide-react';
 import { ActiveTab } from '../types';
 import SyncStatus from './SyncStatus';
 import AppLogo from './AppLogo';
@@ -13,7 +13,6 @@ interface NavbarProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
   currentUser: { name: string; username: string } | null;
-  onLogout: () => void;
   unreadNotificationsCount?: number;
   onOpenNotifications?: () => void;
   onOpenExcelImport?: () => void;
@@ -26,7 +25,6 @@ export default function Navbar({
   activeTab, 
   setActiveTab, 
   currentUser, 
-  onLogout,
   unreadNotificationsCount = 0,
   onOpenNotifications,
   onOpenExcelImport,
@@ -35,25 +33,6 @@ export default function Navbar({
   onSyncComplete
 }: NavbarProps) {
   const [menuOpen, setMenuOpen] = React.useState(false);
-  const [addingMember, setAddingMember] = React.useState(false);
-  const [familyName, setFamilyName] = React.useState('');
-  const [familyUsername, setFamilyUsername] = React.useState('');
-  const [familyPassword, setFamilyPassword] = React.useState('');
-  const [familyMessage, setFamilyMessage] = React.useState('');
-  const [familyBusy, setFamilyBusy] = React.useState(false);
-  const addFamilyMember = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setFamilyBusy(true);
-    setFamilyMessage('');
-    try {
-      const response = await fetch('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: token || '' }, body: JSON.stringify({ name: familyName, username: familyUsername, password: familyPassword }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not add family member.');
-      setFamilyMessage(`${familyName} can now sign in on their phone.`);
-      setFamilyName(''); setFamilyUsername(''); setFamilyPassword('');
-    } catch (error: any) { setFamilyMessage(error.message || 'Could not connect to the server.'); }
-    finally { setFamilyBusy(false); }
-  };
   const tabs: { id: ActiveTab; label: string; icon: React.ReactNode; description: string }[] = [
     { id: 'home', label: 'Home', icon: <Home size={19} className="stroke-[2.2]" />, description: 'Overview & Tasks' },
     { id: 'farm', label: 'Farm', icon: <Heart size={19} className="stroke-[2.2]" />, description: 'Flocks & Inventory' },
@@ -141,7 +120,7 @@ export default function Navbar({
                   <span className="text-xs font-bold text-slate-800 leading-tight">{currentUser.name}</span>
                   <span className="text-[10px] text-slate-400 font-medium">Operator</span>
                 </div>
-                <button type="button" aria-label="Open account menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)} className="min-h-10 min-w-10 flex items-center justify-center border border-emerald-100 rounded-xl bg-emerald-50 text-emerald-800">
+                <button type="button" aria-label="Open farm tools" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)} className="min-h-10 min-w-10 flex items-center justify-center border border-emerald-100 rounded-xl bg-emerald-50 text-emerald-800">
                   {menuOpen ? <X size={20} /> : <Menu size={20} />}
                 </button>
               </div>
@@ -150,20 +129,11 @@ export default function Navbar({
         </div>
       </header>
 
-      {menuOpen && <div className="fixed inset-x-3 top-16 sm:left-auto sm:right-5 sm:w-96 z-50 bg-white border border-emerald-100 rounded-2xl shadow-2xl p-4 space-y-2" role="dialog" aria-label="Account and family menu">
-        <p className="font-bold text-emerald-950 px-2 pb-2">Signed in as {currentUser?.name}</p>
+      {menuOpen && <div className="fixed inset-x-3 top-16 sm:left-auto sm:right-5 sm:w-96 z-50 bg-white border border-emerald-100 rounded-2xl shadow-2xl p-4 space-y-2" role="dialog" aria-label="Farm tools menu">
+        <p className="font-bold text-emerald-950 px-2 pb-2">Farm tools</p>
         <button type="button" onClick={() => { onOpenSearch?.(); setMenuOpen(false); }} className="w-full min-h-11 px-3 rounded-xl text-left hover:bg-emerald-50 flex items-center gap-3"><Search size={19}/> Find a record</button>
-        <button type="button" onClick={() => { onOpenExcelImport?.(); setMenuOpen(false); }} className="w-full min-h-11 px-3 rounded-xl text-left hover:bg-emerald-50 flex items-center gap-3"><Users size={19}/> Import spreadsheet</button>
-        <button type="button" onClick={() => { setAddingMember(!addingMember); setFamilyMessage(''); }} className="w-full min-h-11 px-3 rounded-xl text-left hover:bg-emerald-50 flex items-center gap-3"><UserPlus size={19}/> Add family member</button>
-        {addingMember && <form onSubmit={addFamilyMember} autoComplete="off" className="space-y-3 rounded-xl bg-emerald-50 p-3">
-          <p className="text-sm text-emerald-900">Create an account for someone using another phone.</p>
-          <label className="block text-sm font-medium">Full name<input required name="new-family-name" autoComplete="off" value={familyName} onChange={e => setFamilyName(e.target.value)} className="mt-1 w-full h-11 rounded-lg border border-emerald-200 px-3 bg-white" /></label>
-          <label className="block text-sm font-medium">Username<input required name="new-family-username" autoComplete="off" value={familyUsername} onChange={e => setFamilyUsername(e.target.value)} className="mt-1 w-full h-11 rounded-lg border border-emerald-200 px-3 bg-white" /></label>
-          <label className="block text-sm font-medium">Password (8 or more characters)<input required minLength={8} name="new-family-password" autoComplete="new-password" type="password" value={familyPassword} onChange={e => setFamilyPassword(e.target.value)} className="mt-1 w-full h-11 rounded-lg border border-emerald-200 px-3 bg-white" /></label>
-          {familyMessage && <p role="status" className="text-sm text-emerald-900">{familyMessage}</p>}
-          <button disabled={familyBusy} type="submit" className="w-full min-h-11 rounded-xl bg-emerald-800 text-white font-bold disabled:opacity-50">{familyBusy ? 'Adding…' : 'Create account'}</button>
-        </form>}
-        <button id="logout_btn" type="button" onClick={() => { setMenuOpen(false); onLogout(); }} className="w-full min-h-11 px-3 rounded-xl text-left text-rose-700 hover:bg-rose-50 flex items-center gap-3"><LogOut size={19}/> Sign out</button>
+        <button type="button" onClick={() => { onOpenExcelImport?.(); setMenuOpen(false); }} className="w-full min-h-11 px-3 rounded-xl text-left hover:bg-emerald-50 flex items-center gap-3"><FileSpreadsheet size={19}/> Import spreadsheet</button>
+        <button type="button" onClick={() => { onOpenNotifications?.(); setMenuOpen(false); }} className="w-full min-h-11 px-3 rounded-xl text-left hover:bg-emerald-50 flex items-center gap-3"><Bell size={19}/> Reminders & alerts</button>
       </div>}
 
       {/* Modern High-Clarity Mobile Bottom Navigation */}

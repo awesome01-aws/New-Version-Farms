@@ -16,7 +16,7 @@ async function freePort() {
 
 async function startServer(port, dataDir, envOverrides = {}) {
   const child = spawn(process.execPath, ['dist/server.cjs'], {
-    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', NVF_LOCAL_ONLY: '1', ...envOverrides }, stdio: 'ignore'
+    cwd: process.cwd(), env: { ...process.env, PORT: String(port), NVF_DATA_DIR: dataDir, NODE_ENV: 'production', NVF_LOCAL_ONLY: '1', NVF_OPEN_ACCESS: '0', ...envOverrides }, stdio: 'ignore'
   });
   for (let i = 0; i < 900; i++) {
     if (child.exitCode !== null) throw new Error(`Server stopped with ${child.exitCode}`);
@@ -145,6 +145,56 @@ test('family sessions, shared records, offline rejection and durable storage', a
   }
 });
 
+test('open access skips sign-in, keeps shared records, and does not expose stored accounts', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nvf-open-test-'));
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  let server;
+  const post = (path, body) => fetch(base + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  try {
+    server = await startServer(port, dataDir);
+    assert.equal((await post('/api/auth/register', { username: 'dad', name: 'Dad', password: 'strong-pass-123' })).status, 200);
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+
+    server = await startServer(port, dataDir, { NVF_OPEN_ACCESS: '1' });
+    const status = await (await fetch(base + '/api/auth/status')).json();
+    assert.equal(status.authDisabled, true);
+    assert.equal(status.setupRequired, false);
+    assert.equal(status.userCount, 1);
+    assert.equal((await post('/api/auth/login', { username: 'dad', password: 'strong-pass-123' })).status, 410);
+    assert.equal((await post('/api/auth/register', { username: 'other', name: 'Other', password: 'strong-pass-456' })).status, 410);
+
+    const firstPhone = await fetch(base + '/api/data');
+    assert.equal(firstPhone.status, 200);
+    const initialData = await firstPhone.json();
+    assert.deepEqual(initialData.users, []);
+    assert.equal(initialData.sessions, undefined);
+    assert.equal((await fetch(base + '/api/db-raw')).status, 200);
+
+    const action = { id: 'open-hutch', kind: 'rabbit_hutch', payload: { name: 'Family hutch' } };
+    assert.equal((await post('/api/farm/actions', action)).status, 200);
+    assert.equal((await post('/api/farm/actions', action)).status, 200);
+    const secondPhone = await (await fetch(base + '/api/data')).json();
+    assert.equal(secondPhone.rabbit_hutches.filter(item => item.id === 'open-hutch').length, 1);
+    assert.ok(secondPhone.activity_log.some(item => item.actor === 'Farm member' && item.action === 'Recorded rabbit hutch'));
+    assert.equal((await fetch(base + '/api/data', { headers: { Origin: 'https://untrusted.example' } })).status, 403);
+
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+    server = await startServer(port, dataDir, { NVF_OPEN_ACCESS: '1' });
+    const afterRestart = await (await fetch(base + '/api/data')).json();
+    assert.equal(afterRestart.rabbit_hutches.filter(item => item.id === 'open-hutch').length, 1);
+    const stored = JSON.parse(readFileSync(join(dataDir, 'db.json'), 'utf8'));
+    assert.equal(stored.users[0].name, 'Dad');
+  } finally {
+    server?.kill();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('production refuses disposable local storage without explicit local-only mode', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'nvf-no-cloud-test-'));
   const port = await freePort();
@@ -176,7 +226,7 @@ test('cloud mode ignores stale local data and acknowledges only committed Firest
   writeFileSync(join(dataDir, 'db.json'), JSON.stringify({ users: [{ id: 'stale', username: 'stale', passwordHash: 'old', name: 'Stale' }] }));
   const child = spawn(process.execPath, ['--require', mockPath, serverPath], {
     cwd: dataDir,
-    env: { ...process.env, NODE_ENV: 'production', NVF_DATA_DIR: dataDir, PORT: String(port), NVF_LOCAL_ONLY: '0', NVF_TEST_FAIL_FIRST_WRITE: '1' },
+    env: { ...process.env, NODE_ENV: 'production', NVF_DATA_DIR: dataDir, PORT: String(port), NVF_LOCAL_ONLY: '0', NVF_OPEN_ACCESS: '0', NVF_TEST_FAIL_FIRST_WRITE: '1' },
     stdio: 'ignore'
   });
   try {

@@ -21,6 +21,9 @@ function cameroonDate(date: Date = new Date()): string {
 
 // Ensure data folder exists
 const DATA_DIR = process.env.NVF_DATA_DIR || path.join(process.cwd(), "data");
+// Public family mode is the default. Set NVF_OPEN_ACCESS=0 to restore the
+// legacy account checks without changing stored farm or account records.
+const OPEN_ACCESS = process.env.NVF_OPEN_ACCESS !== '0';
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -983,13 +986,14 @@ async function startServer() {
   // --- AUTHENTICATION MIDDLEWARE ---
   function getAuthorizedUser(req: express.Request): any | null {
     const token = req.headers["authorization"] || req.headers["x-auth-token"];
-    if (!token) return null;
-
-    const db = loadDb();
-    const tokenHash = crypto.createHash('sha256').update(String(token).replace(/^Bearer\s+/i, '')).digest('hex');
-    const session = (db.sessions || []).find((s: any) => s.tokenHash === tokenHash && s.expiresAt > Date.now());
-    const user = session && db.users.find((u: any) => u.id === session.userId);
-    return user || null;
+    if (token) {
+      const db = loadDb();
+      const tokenHash = crypto.createHash('sha256').update(String(token).replace(/^Bearer\s+/i, '')).digest('hex');
+      const session = (db.sessions || []).find((s: any) => s.tokenHash === tokenHash && s.expiresAt > Date.now());
+      const user = session && db.users.find((u: any) => u.id === session.userId);
+      if (user) return user;
+    }
+    return OPEN_ACCESS ? { id: 'operator', username: 'operator', name: 'Farm member' } : null;
   }
 
   function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1035,14 +1039,16 @@ async function startServer() {
   app.get("/api/auth/status", (req, res) => {
     const db = loadDb();
     res.json({
-      setupRequired: db.users.length === 0,
+      setupRequired: !OPEN_ACCESS && db.users.length === 0,
       userCount: db.users.length,
-      localRecoveryAllowed: canUseLocalRecovery(req)
+      authDisabled: OPEN_ACCESS,
+      localRecoveryAllowed: !OPEN_ACCESS && canUseLocalRecovery(req)
     });
   });
 
   // User Sign-up/Register (Max 5 family members)
   app.post("/api/auth/register", (req, res) => {
+    if (OPEN_ACCESS) return res.status(410).json({ error: 'Accounts are disabled in open access mode.' });
     const { username, password, name } = req.body;
     if (typeof username !== 'string' || typeof password !== 'string' || typeof name !== 'string' || !username.trim() || !name.trim() || password.length < 8) {
       return res.status(400).json({ error: "Enter a name, username and password of at least 8 characters." });
@@ -1098,6 +1104,7 @@ async function startServer() {
 
   // User Authentication login
   app.post("/api/auth/login", (req, res) => {
+    if (OPEN_ACCESS) return res.status(410).json({ error: 'Sign-in is disabled in open access mode.' });
     const { username, password } = req.body;
     if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return res.status(400).json({ error: "Username and password are required." });
@@ -1131,6 +1138,7 @@ async function startServer() {
   });
 
   app.post('/api/auth/logout', requireAuth, (req, res) => {
+    if (OPEN_ACCESS) return res.status(410).json({ error: 'Sign-out is disabled in open access mode.' });
     const db = loadDb();
     const token = String(req.headers.authorization || req.headers['x-auth-token'] || '').replace(/^Bearer\s+/i, '');
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
@@ -1184,7 +1192,7 @@ async function startServer() {
     }
 
     // Exclude security hashes
-    const safeUsers = (db.users || []).map((u: any) => ({ id: u.id, username: u.username, name: u.name }));
+    const safeUsers = OPEN_ACCESS ? [] : (db.users || []).map((u: any) => ({ id: u.id, username: u.username, name: u.name }));
     res.json({
       users: safeUsers,
       clients: db.clients || [],
